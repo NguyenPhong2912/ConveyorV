@@ -54,7 +54,7 @@ def resolve_track_buffer(tracker_config: str) -> int:
 
 def run_conveyor_inspection(
     source: str = "0",
-    model_path: str = "models/conveyor_yolo26_30ep_best.pt",
+    model_path: str = "models/conveyor_qc_yolo26n.pt",
     conf_thresh: float = 0.45,
     tracker_config: str = "bytetrack.yaml",
     out_video: str = "",
@@ -70,7 +70,7 @@ def run_conveyor_inspection(
     model_file = Path(model_path).resolve()
     if not model_file.exists():
         candidate_fallbacks = [
-            Path("models/conveyor_yolo26_30ep_best.pt").resolve(),
+            Path("models/conveyor_qc_yolo26n.pt").resolve(),
             Path("runs/train/conveyor_yolo26_30/weights/best.pt").resolve(),
             Path("runs/detect/runs/train/conveyor_yolo26_30/weights/best.pt").resolve(),
             Path("runs/pilot/pilot_test/weights/best.pt").resolve(),
@@ -94,7 +94,7 @@ def run_conveyor_inspection(
             print("   Bạn có thể tạo trọng số bằng cách:")
             print("     1. Chạy notebook notebooks/ConveyorVision_YOLO_Training.ipynb trên Google Colab GPU (~7.7 phút)")
             print("     2. Hoặc chạy CLI: python src/conveyorvision/train_pilot.py --epochs 30")
-            print("     3. Hoặc tải file weights về và đặt vào models/conveyor_yolo26_30ep_best.pt")
+            print("     3. Hoặc tải file weights về và đặt vào models/conveyor_qc_yolo26n.pt")
             return None
 
     # Khởi tạo mô hình YOLO26
@@ -351,7 +351,7 @@ def run_conveyor_inspection(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ConveyorVision Realtime Inspection")
     parser.add_argument("--source", type=str, default="0", help="Nguồn video (0 cho webcam, hoặc đường dẫn file .mp4)")
-    parser.add_argument("--model", type=str, default="models/conveyor_yolo26_30ep_best.pt", help="File trọng số YOLO26")
+    parser.add_argument("--model", type=str, default="models/conveyor_qc_yolo26n.pt", help="File trọng số YOLO26")
     parser.add_argument("--tracker", type=str, default="bytetrack.yaml", help="File cấu hình tracker (mặc định bytetrack.yaml)")
     parser.add_argument("--conf", type=float, default=0.45, help="Ngưỡng tin cậy (Confidence threshold)")
     parser.add_argument("--out-video", type=str, default="", help="Đường dẫn file video đầu ra (tùy chọn)")

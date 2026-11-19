@@ -71,27 +71,29 @@ def test_dataset_info_api(client):
     assert data["splits"]["test"]["count"] >= 0
 
 
-def test_evaluation_api(client):
-    """Kiểm tra API /api/evaluation trả về đầy đủ các chỉ số test và cảnh báo near-duplicate."""
-    response = client.get("/api/evaluation")
-    assert response.status_code == 200
-    data = response.json()
-    
-    # Kiểm tra cấu trúc response
-    assert "test_metrics" in data
-    assert "overall" in data["test_metrics"]
-    assert "map50" in data["test_metrics"]["overall"]
-    assert "precision" in data["test_metrics"]["overall"]
-    assert "recall" in data["test_metrics"]["overall"]
+def test_evaluation_api_without_metrics(client, tmp_path, monkeypatch):
+    """Chưa chạy evaluate.py --export thì API báo chưa có số liệu, không trả số liệu giả."""
+    from conveyorvision.web import server
 
-    # Kiểm tra nội dung cảnh báo rủi ro dữ liệu cận trùng
-    warning = data["data_leakage_warning"]
-    assert "message" in warning
-    assert "recommendation" in warning
+    monkeypatch.setattr(server, "EVAL_DIR", tmp_path)
+    data = client.get("/api/evaluation").json()
+    assert data == {"available": False, "charts": []}
 
-    # Kiểm tra danh sách biểu đồ
-    assert "charts" in data
-    assert len(data["charts"]) >= 4
+
+def test_evaluation_api_reads_exported_metrics(client, tmp_path, monkeypatch):
+    """API trả nguyên số liệu từ metrics.json và chỉ liệt kê biểu đồ có file thật."""
+    from conveyorvision.web import server
+
+    metrics = {"overall": {"precision": 90.0, "recall": 80.0, "map50": 85.0, "map50_95": 60.0}, "classes": []}
+    (tmp_path / "metrics.json").write_text(json.dumps(metrics), encoding="utf-8")
+    (tmp_path / "results.png").write_bytes(b"png")
+    monkeypatch.setattr(server, "EVAL_DIR", tmp_path)
+
+    data = client.get("/api/evaluation").json()
+    assert data["available"] is True
+    assert data["overall"]["map50"] == 85.0
+    assert [c["id"] for c in data["charts"]] == ["training_progress"]
+    assert data["charts"][0]["image_url"] == "doc/evaluation/results.png"
 
 
 def test_models_api(client):
@@ -108,6 +110,47 @@ def test_models_api(client):
         assert "path" in model
         assert "size_mb" in model
         assert "modified" in model
+        assert model["kind"] in ("coco", "custom")
+
+
+def test_coco_weights_classification():
+    """Trọng số gốc YOLO (COCO) được phân biệt với checkpoint QC tự huấn luyện."""
+    from conveyorvision.web.server import COCO_WEIGHTS_RE
+
+    for name in ("yolo26n.pt", "yolov8n.pt", "yolo11s.pt", "YOLOv8x.pt"):
+        assert COCO_WEIGHTS_RE.match(name), name
+    for name in ("conveyor_yolo26_30ep_best.pt", "yolov8n_pilot_best.pt", "best.pt"):
+        assert not COCO_WEIGHTS_RE.match(name), name
+
+
+def test_sources_api(client, tmp_path, monkeypatch):
+    """Kiểm tra API /api/sources chỉ liệt kê file video hợp lệ, mới nhất trước."""
+    import os
+    from conveyorvision.web import server
+
+    old_video = tmp_path / "old.mp4"
+    old_video.write_bytes(b"x")
+    os.utime(old_video, (1_000_000, 1_000_000))
+    (tmp_path / "new.MOV").write_bytes(b"x")
+    (tmp_path / "notes.txt").write_text("không phải video")
+    monkeypatch.setattr(server, "RAW_VIDEOS_DIR", tmp_path)
+
+    res = client.get("/api/sources")
+    assert res.status_code == 200
+    assert [v["name"] for v in res.json()] == ["new.MOV", "old.mp4"]
+    assert res.json()[1]["path"] == "raw_videos/old.mp4"
+
+
+def test_system_check_api(client):
+    """Kiểm tra API /api/system_check trả về đủ thông tin cho danh sách sẵn sàng."""
+    res = client.get("/api/system_check")
+    assert res.status_code == 200
+    data = res.json()
+    assert isinstance(data["ultralytics"], bool)
+    assert data["gpu"] is None or isinstance(data["gpu"], str)
+    assert isinstance(data["coco_models"], list)
+    assert isinstance(data["custom_models"], list)
+    assert isinstance(data["videos"], int)
 
 
 def test_history_and_session_manager(tmp_path):

@@ -1,4 +1,4 @@
-﻿[build-system]
+[build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
@@ -30,6 +30,7 @@ classifiers = [
 
 dependencies = [
     "ultralytics==8.4.175",
+    "lap==0.5.13",
     "opencv-python==5.0.0.93",
     "roboflow==1.7.1",
     "matplotlib==3.11.2",
@@ -37,7 +38,7 @@ dependencies = [
     "pandas>=2.2.3",
     "pyyaml==6.0.3",
     "fastapi==0.143.0",
-    "uvicorn==0.54.0",
+    "uvicorn[standard]==0.54.0",
     "python-multipart==0.0.32",
     "jinja2==3.1.6",
     "reportlab==5.1.0",

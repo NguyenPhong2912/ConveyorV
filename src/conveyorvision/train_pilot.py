@@ -31,7 +31,9 @@ def train_pilot(
     project: str = "runs/pilot",
     name: str = "pilot_run",
     device: str = "",
-    cls: float = 1.2
+    cls: float = 1.2,
+    patience: int = 100,
+    cache: str = ""
 ):
     try:
         from ultralytics import YOLO
@@ -92,7 +94,9 @@ def train_pilot(
         save=True,
         exist_ok=True,
         verbose=True,
-        cls=cls
+        cls=cls,
+        patience=patience,
+        cache=cache if cache else False
     )
 
     elapsed = time.time() - start_time
@@ -122,6 +126,8 @@ if __name__ == "__main__":
     parser.add_argument("--name", type=str, default="pilot_test", help="Tên lần chạy")
     parser.add_argument("--device", type=str, default="", help="Device: 0 (GPU), cpu, etc.")
     parser.add_argument("--cls", type=float, default=1.2, help="Trọng số loss classification cho class defect (mặc định 1.2)")
+    parser.add_argument("--patience", type=int, default=100, help="Dừng sớm sau N epoch val không cải thiện")
+    parser.add_argument("--cache", type=str, default="", choices=["", "ram", "disk"], help="Cache ảnh vào RAM/disk để tăng tốc nạp dữ liệu")
 
     args = parser.parse_args()
     res = train_pilot(
@@ -133,7 +139,9 @@ if __name__ == "__main__":
         project=args.project,
         name=args.name,
         device=args.device,
-        cls=args.cls
+        cls=args.cls,
+        patience=args.patience,
+        cache=args.cache
     )
     if res is None:
         sys.exit(1)

@@ -1,111 +1,63 @@
-# ConveyorVision — YOLO26 30-Epoch Training & Evaluation Report
+# Đánh giá mô hình ConveyorVision QC (YOLO26n)
 
-Báo cáo kết quả huấn luyện và đánh giá thực nghiệm mô hình thị giác máy tính **YOLO26 Nano** cho bài toán phân loại sản phẩm đạt chuẩn (`pass`) / phế phẩm (`defect`) trên băng chuyền công nghiệp.
+Mọi số liệu dưới đây lấy từ [`metrics.json`](metrics.json). File này do lệnh sau sinh ra, và dashboard đọc trực tiếp từ đó:
 
----
+```bash
+python src/conveyorvision/evaluate.py --model models/conveyor_qc_yolo26n.pt --split test --device 0 \
+    --export doc/evaluation --train-run runs/detect/runs/train/conveyor_yolo26_groupsplit
+```
 
-## 1. Thông Số Huấn Luyện (Training Setup)
+## 1. Dữ liệu
 
-| Thông số | Giá trị |
+- 2.666 ảnh thật từ 3 dataset Roboflow. Sau khi bỏ 16 frame ở các điểm cắt video còn **2.650 ảnh**: train 1.866 / val 385 / test 399.
+- Chia **theo nhóm** bằng `scripts/prepare_dataset.py`:
+  - video băng chuyền chia theo thời gian;
+  - ảnh tĩnh gộp nhóm gần trùng bằng pHash (Hamming ≤ 6) rồi chia nguyên nhóm.
+- Rò rỉ (số ảnh val/test có bản gần trùng trong train): split ngẫu nhiên gốc của Roboflow **63** → split theo nhóm **1**. Ảnh còn lại là frame 1741 so với frame 661, băng chuyền trông giống nhau, không phải chuỗi liền kề.
+- `defect` = chai bị bóp méo / móp / biến dạng. `pass` = chai nguyên vẹn, gồm cả chai trên băng chuyền phân loại rác thải.
+
+## 2. Huấn luyện
+
+YOLO26n khởi tạo từ trọng số COCO, imgsz 640, batch 16, `cls=1.2`, early stopping (patience 20).
+Huấn luyện dừng ở epoch 67, tốt nhất ở epoch 47, mất 55 phút trên Quadro RTX 6000 dùng chung với người khác.
+
+## 3. Kết quả trên tập Test (399 ảnh, 802 box)
+
+| Lớp | Ảnh | Box | Precision | Recall | mAP@50 | mAP@50-95 |
+| :--- | ---: | ---: | :---: | :---: | :---: | :---: |
+| **Tất cả** | 399 | 802 | 70.3% | 77.8% | **78.8%** | 54.5% |
+| `pass` | 294 | 724 | 68.1% | 72.2% | 75.6% | 51.3% |
+| `defect` | 66 | 78 | 72.5% | 83.3% | 82.1% | 57.6% |
+
+**Ma trận nhầm lẫn tại conf = 0.25** (chuẩn hoá theo nhãn thật):
+
+| Nhãn thật | Đúng | Nhầm sang lớp kia | Bỏ sót (background) |
+| :--- | :---: | :---: | :---: |
+| `pass` | 94.6% | 3.3% | 2.1% |
+| `defect` | 59.0% | **41.0%** | 0.0% |
+
+Mô hình hầu như **không bỏ sót** chai, nhưng **41% chai lỗi bị gán nhầm là `pass`** ở ngưỡng này.
+Nguyên nhân chính là mất cân bằng lớp: train có 366 box defect so với 3.611 box pass.
+Trong ứng dụng, cơ chế Multi-frame Voting giảm rủi ro này: một frame thấy lỗi với conf ≥ 0.5, hoặc ≥ 2 frame thấy lỗi, là chốt DEFECT.
+
+## 4. Tốc độ (640px)
+
+| Thiết bị | ms/ảnh (tiền xử lý + suy luận + hậu xử lý) | FPS |
+| :--- | :---: | :---: |
+| GPU Quadro RTX 6000 | 15.9 | ~63 |
+| CPU Intel Xeon Gold 5218R @ 2.10GHz | 52.3 | ~19 |
+
+## 5. Giới hạn và hướng cải thiện
+
+1. **Thêm ảnh chai lỗi:** lớp `defect` chỉ chiếm 9.4% số box.
+2. **Domain gap:** dữ liệu là ảnh chai đơn lẻ và băng chuyền rác thải. Trên video dây chuyền chiết rót dày đặc, chai nhìn từ trên xuống, mô hình gần như không phát hiện được. Cần fine-tune bằng video từ camera thật của trạm.
+3. **Loại lỗi:** dữ liệu chỉ có lỗi biến dạng, chưa có lỗi nắp, nhãn mác hay thể tích.
+
+## 6. Biểu đồ
+
+| File | Nội dung |
 | :--- | :--- |
-| **Kiến trúc mô hình** | **YOLO26 Nano** (`yolo26n.pt` native, End-to-end NMS-free) |
-| **Số layer / Tham số** | 260 layers, 2,504,580 parameters, 5.9 GFLOPs |
-| **Kích thước file trọng số** | **5.45 MB** (phù hợp triển khai biên Edge/IoT/Embedded) |
-| **Môi trường huấn luyện** | Google Colab GPU Runtime (NVIDIA L4/T4) |
-| **Thời gian huấn luyện** | **463.2 giây (~7.7 phút)** cho 30 epochs (~15.4 giây/epoch) |
-| **Quy mô tập dữ liệu** | 2.666 ảnh (Train: 1.692, Val: 533, Test: 441) |
-| **Batch size / Image size** | 16 / 640x640 |
-| **Optimizer** | AdamW (`lr=0.001667`, `momentum=0.9`) |
-| **Trọng số phân loại (`cls`)** | `cls=1.2` (giả thuyết kỹ thuật nhằm tăng hệ số phạt phân loại sai đối với lớp thiểu số; hiệu quả thực sự cần được kiểm chứng qua nghiên cứu triệt tiêu / ablation study có đối chứng với `cls=0.5`) |
-
----
-
-## 2. Kết Quả Huấn Luyện Trên Tập Validation (533 ảnh)
-
-Tiến trình đo lường qua các mốc epoch trên tập Validation:
-
-| Chỉ số | Epoch 1 | Epoch 10 | Epoch 20 | Epoch 30 (Final) |
-| :--- | :---: | :---: | :---: | :---: |
-| **Precision (Độ chính xác)** | 56.5% | 71.6% | 77.8% | **78.7%** |
-| **Recall (Độ nhạy / Bắt trúng)** | 52.3% | 69.3% | 77.7% | **79.3%** |
-| **mAP@50** | 56.8% | 73.3% | 80.6% | **82.0%** |
-| **mAP@50-95** | 32.6% | 45.6% | 54.2% | **58.0%** |
-| **Box Loss (Train / Val)** | 1.410 / 1.333 | 1.396 / 1.307 | 1.234 / 1.216 | **1.091 / 1.097** |
-| **Class Loss (Train / Val)** | 12.19 / 5.704 | 3.344 / 2.972 | 2.644 / 2.459 | **1.775 / 2.276** |
-
----
-
-## 3. Kết Quả Đánh Giá Trên Phân Tập Test (441 ảnh, 1.032 Bounding Boxes)
-
-Đánh giá bằng lệnh `python src/conveyorvision/evaluate.py --split test --model models/conveyor_yolo26_30ep_best.pt` trên 441 ảnh phân tập test:
-
-| Lớp (Class) | Số lượng ảnh | Số Bounding Box | Precision | Recall | mAP@50 | mAP@50-95 |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Tất cả (Overall)** | **441** | **1.032** | **78.2%** | **75.7%** | **82.5%** | **61.4%** |
-| `pass` (Đạt chuẩn) | 381 | 991 | 79.7% | 66.1% | 78.9% | 51.2% |
-| `defect` (Lỗi / Phế phẩm) | 36 | 41 | **76.6%** | **85.4%** | **86.2%** | **71.7%** |
-
-> [!NOTE]
-> **Phân tích chỉ số Recall vs Ma trận nhầm lẫn cố định (Confusion Matrix @ conf=0.25):**
-> - **Chỉ số Recall = 85.4% (IoU 0.5):** Được tính toán tích hợp trên toàn dải ngưỡng confidence theo chuẩn đánh giá PASCAL VOC/COCO mAP.
-> - **Ma trận nhầm lẫn chuẩn hóa (Normalized Confusion Matrix):** Do Ultralytics trích xuất tại một ngưỡng cứng duy nhất (`conf=0.25`, `iou=0.45`). Tại ngưỡng này, do kích thước mẫu phế phẩm ở tập test rất nhỏ (**chỉ 41 bounding boxes trên 36 ảnh**), khoảng ~41% bounding box defect bị gán nhầm sang `pass` hoặc nền background. Điều này cho thấy mô hình ở ngưỡng cứng 0.25 vẫn có xu hướng thiên vị lớp chiếm đa số (`pass`), và nhấn mạnh tầm quan trọng của cơ chế **Multi-frame Voting & điều chỉnh ngưỡng tin cậy** khi ứng dụng thực tế.
-> - **Về tham số `cls=1.2`:** Đây là tham số giả thuyết thực nghiệm. Không đưa ra khẳng định kết luận rằng `cls=1.2` tối ưu hơn mặc định cho đến khi thực hiện nghiên cứu triệt tiêu (controlled ablation study) với cùng một seed và cùng phân tập.
-
-> [!WARNING]
-> **Giới hạn phương pháp luận — Quy mô mẫu nhỏ & Nguy cơ rò rỉ dữ liệu cận trùng (Near-Duplicate Leakage):**
-> 1. **Quy mô mẫu phế phẩm:** Tập test chỉ chứa 41 nhãn `defect` trong 36 bức ảnh (chiếm chưa đầy 4% tổng số bounding box của phân tập test).
-> 2. **Rò rỉ ảnh cận trùng:** Qua kiểm tra đối sánh hàm băm tri giác (perceptual similarity/pHash/SSIM), phát hiện **53–54 cặp ảnh cận trùng** giữa tập Train và tập Test (41 ảnh test có bản sao rất gần trong train, trong đó có **23/36 ảnh test chứa defect**). Nguyên nhân do ảnh trích xuất từ video cùng chuỗi hoặc được gán nhãn ngẫu nhiên từng frame.
-> 
-> Vì hai yếu tố trên, các kết quả kiểm thử hiện tại được coi là **ngưỡng trên thực nghiệm (empirical upper bound)**, chưa đủ cơ sở để chứng minh năng lực tổng quát hóa độc lập ngoài môi trường nhà xưởng. Để nghiệm thu kỹ thuật, bắt buộc phải **phân tách lại toàn bộ tập dữ liệu theo từng video clip / phiên quay vật lý độc lập (session-based split)**.
-
----
-
-## 4. Đo Lường Thực Nghiệm Hiệu Năng & Tốc Độ (Inference Benchmark)
-
-* **Đo lường thực tế trên CPU (Empirical Measurement):**
-  - Cấu hình: Intel Core i7-8565U CPU @ 1.80GHz (laptop văn phòng phổ thông, không có GPU rời).
-  - Tiền xử lý (Preprocess): **3.1 ms/ảnh**
-  - Suy luận mô hình (Inference): **125.9 ms/ảnh**
-  - Hậu xử lý (Postprocess): **2.4 ms/ảnh**
-  - **Tốc độ thực tế đạt được:** **~7.9 FPS** (phù hợp với các hệ thống kiểm tra tĩnh theo chu kỳ hoặc trạm dừng băng chuyền chậm).
-* **Tốc độ ước tính trên GPU công nghiệp (Projected Edge GPU):**
-  - Dự kiến **>80 FPS** khi chạy trên NVIDIA Tesla T4 / RTX 3060 / Jetson Orin Nano (khi export sang TensorRT/FP16).
-  - Tốc độ thực tế trong môi trường sản xuất sẽ phụ thuộc thêm vào độ trễ nạp khung hình camera công nghiệp (GenICam/USB3) và thuật toán tracking ByteTrack.
-
----
-
-## 5. Biểu Đồ Trực Quan Hóa (Visual Analytics)
-
-### 5.1. Tiến trình huấn luyện (Loss & Performance Curves)
-![Biểu đồ tiến trình huấn luyện](results.png)
-
-### 5.2. Ma trận nhầm lẫn (Confusion Matrix)
-| Tập Validation (533 ảnh) | Phân Tập Test (441 ảnh) |
-| :---: | :---: |
-| ![Val CM](confusion_matrix_normalized.png) | ![Test CM](test_confusion_matrix_normalized.png) |
-
-> [!NOTE]
-> *Ghi chú về ngưỡng ma trận nhầm lẫn:* Các ma trận nhầm lẫn chuẩn hóa trên được Ultralytics tạo tự động tại một ngưỡng cố định duy nhất là `conf=0.25` và `iou=0.45`. Tại ngưỡng này, với số lượng mẫu defect trong tập test rất ít (41 boxes), 41% số box defect bị gán sang `pass`, phản ánh độ nhạy phân loại của mô hình tại ngưỡng tĩnh 0.25 trước khi áp dụng cơ chế voting theo vết. Điểm này khác biệt với chỉ số **Recall = 85.4%** trong Bảng 3 vốn được tính tổng hợp trên toàn dải ngưỡng của đường cong PR.
-
-### 5.3. Đường cong Precision - Recall (PR Curve)
-| Tập Validation | Phân Tập Test |
-| :---: | :---: |
-| ![Val PR](BoxPR_curve.png) | ![Test PR](test_BoxPR_curve.png) |
-
----
-
-## 6. Thảo Luận Kỹ Thuật & Giới Hạn Thực Tế (Discussion & Limitations)
-
-### 6.1. Vấn đề khoảng cách miền (Domain Gap / Covariate Shift)
-Trong bài toán thị giác công nghiệp, hiện tượng **"học tốt trên tập dữ liệu lab nhưng giảm hiệu quả khi ra môi trường nhà máy thật"** là thách thức phổ biến do:
-1. **Chiếu sáng & Phản quang:** Bề mặt chai nhựa/thủy tinh phản chiếu ánh đèn nhà xưởng khác với studio chụp mẫu.
-2. **Chuyển động & Nhòe hình (Motion Blur):** Vận tốc băng chuyền thực tế có thể tạo vệt mờ chuyển động nếu màn trập camera (shutter speed) chưa đồng bộ.
-3. **Biến thể sản phẩm mới:** Màu sắc nắp, nhãn mác, hình dáng chai khác biệt so với 1.692 ảnh tập huấn luyện ban đầu (trong tổng quy mô 2.666 ảnh của cả 3 phân tập).
-
-### 6.2. Giải pháp kỹ thuật đã triển khai & Khuyến nghị tiếp theo
-* **Cơ chế Multi-frame Voting:** Đã được tích hợp trực tiếp vào `src/conveyorvision/inference_conveyor.py`. Thay vì phán quyết ngay ở frame đầu tiên (dễ nhầm do góc nghiêng hoặc mép ảnh), hệ thống tích lũy lịch sử nhận diện của từng Track ID qua ByteTrack. Chai chỉ được kết luận `DEFECT` khi có $\ge 2$ frame phát hiện lỗi hoặc 1 frame lỗi có độ tự tin cao ($\ge \max(0.5, \text{conf\_thresh})$).
-* **Kế hoạch kiểm định hiện trường & Nghiệm thu:**
-  1. **Tái phân tập kiểm thử theo phiên quay (Session-based Test Split):** Trước khi tiến hành nghiệm thu độ chính xác kỹ thuật chính thức, phân tách toàn bộ dữ liệu kiểm thử theo từng video clip / phiên quay vật lý riêng biệt (thay vì phân chia ngẫu nhiên từng frame của Roboflow) để loại bỏ hoàn toàn các cặp ảnh cận trùng và đo đạc độ chính xác độc lập thực sự.
-  2. Thu thập 100–200 ảnh hoặc video clip trực tiếp tại vị trí lắp đặt camera thực tế.
-  3. Thực hiện Fine-tuning (Domain Adaptation) 5–10 epochs trên ảnh hiện trường trước khi vận hành tự động cơ cấu gạt/đẩy phế phẩm.
-  4. Đo đạc benchmark FPS trực tiếp trên phần cứng nhúng biên công nghiệp (Edge AI box).
+| `results.png`, `results.csv` | Loss và mAP theo từng epoch |
+| `test_confusion_matrix_normalized.png` | Ma trận nhầm lẫn trên tập test |
+| `test_BoxPR_curve.png` | Đường cong Precision–Recall trên tập test |
+| `test_batch0_pred.jpg` | Dự đoán mẫu trên ảnh test |

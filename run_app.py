@@ -6,11 +6,16 @@ Sử dụng:
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
+# Worker dùng đường dẫn tương đối (models/, raw_videos/, reports/) → luôn chạy từ thư mục gốc repo
+REPO_ROOT = Path(__file__).resolve().parent
+os.chdir(REPO_ROOT)
+
 # Đảm bảo src/ nằm trong sys.path
-SRC_DIR = Path(__file__).resolve().parent / "src"
+SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 

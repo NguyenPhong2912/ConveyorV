@@ -1,12 +1,41 @@
-/**
- * ConveyorVision — Single Page Application Frontend Client
- * Xử lý: WebSocket kết nối trực tiếp, cập nhật HUD, bảng nhật ký sự kiện tại chỗ,
- * bộ tổng hợp âm thanh còi báo lỗi (Web Audio API), hỗ trợ đa dạng vật thể và điều hướng 6 màn hình.
- */
+/* ==========================================================================
+   ConveyorVision — Dashboard client
+   Luồng chính: Tổng quan (kiểm tra sẵn sàng) → Vận hành (thiết lập → chạy → tổng kết) → Lịch sử
+   ========================================================================== */
+"use strict";
 
-function escapeHtml(str) {
-  if (str === null || str === undefined) return "";
-  return String(str)
+const SCREENS = {
+  overview: ["Tổng quan", "Tình trạng trạm và kết quả các phiên gần nhất"],
+  live: ["Vận hành", "Thiết lập, giám sát và kết thúc phiên kiểm định"],
+  history: ["Lịch sử phiên", "Kết quả, chi tiết từng sản phẩm và báo cáo CSV"],
+  models: ["Mô hình & Dữ liệu", "Chỉ số đánh giá, checkpoint và tập dữ liệu"],
+  settings: ["Cài đặt", "Giá trị mặc định cho các phiên kiểm định mới"],
+  docs: ["Tài liệu", "Hướng dẫn vận hành và tài liệu PDF"],
+};
+
+const STATE_LABELS = {
+  RUNNING: "Đang kiểm định",
+  PAUSED: "Tạm dừng",
+  ERROR: "Có lỗi",
+  STOPPED: "Sẵn sàng",
+};
+
+const SESSION_STATUS = {
+  COMPLETED: ["pass", "Hoàn tất"],
+  RUNNING: ["inspecting", "Đang chạy"],
+  FAILED: ["defect", "Lỗi"],
+};
+
+const TRACKER_NAMES = { "bytetrack.yaml": "ByteTrack", "botsort.yaml": "BoT-SORT" };
+const VIDEO_EXTENSIONS = ["mp4", "avi", "mov", "mkv"];
+const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
+const MAX_LOG_ROWS = 60;
+
+const $ = (id) => document.getElementById(id);
+
+function escapeHtml(value) {
+  if (value === null || value === undefined) return "";
+  return String(value)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -14,1057 +43,1306 @@ function escapeHtml(str) {
     .replace(/'/g, "&#039;");
 }
 
+function formatDuration(totalSec) {
+  const sec = Math.max(0, Math.floor(Number(totalSec) || 0));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+
+/** "/reports/x.jpg" → "reports/x.jpg" để đi qua cùng tiền tố proxy với trang. */
+function relativeUrl(url) {
+  return String(url || "").replace(/^\//, "");
+}
+
+function baseName(path) {
+  return String(path || "").split(/[\\/]/).pop();
+}
+
+function defectRate(pass, defect) {
+  const total = (pass || 0) + (defect || 0);
+  return total > 0 ? ((defect / total) * 100).toFixed(1) : "0.0";
+}
+
+/** fetch + JSON, ném lỗi kèm thông điệp `detail` của FastAPI khi HTTP lỗi. */
+async function api(url, options = {}) {
+  const res = await fetch(url, options);
+  let data = null;
+  try {
+    data = await res.json();
+  } catch (_) {
+    data = null;
+  }
+  if (!res.ok) {
+    const detail = data && data.detail;
+    throw new Error(typeof detail === "string" ? detail : `HTTP ${res.status}`);
+  }
+  return data;
+}
+
+function postJson(url, body) {
+  return api(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
 class ConveyorVisionApp {
   constructor() {
-    this.currentScreen = "overview";
-    this.ws = null;
-    this.wsConnected = false;
-    this.audioContext = null;
-    this.soundEnabled = true;
-    this.settings = {
-      defaultConf: 0.45,
-      defaultTracker: "bytetrack.yaml",
-      soundAlarm: true,
-      loopVideo: true
-    };
+    this.screen = "overview";
+    this.status = { state: "STOPPED" };
 
-    // Lưu vết các track hiển thị trên bảng nhật ký: trackId -> { element, statusBadge, typeElem, confElem, timeElem }
+    // Dữ liệu cho bước thiết lập phiên
+    this.systemCheck = null;
+    this.sources = [];
+    this.models = [];
+    this.sourceType = "video";
+    this.selectedVideo = null;
+    this.defaults = { tracker: "bytetrack.yaml", default_conf: 0.45, sound_alarm: true };
+
+    // Phiên đang chạy
     this.eventRows = new Map();
+    this.elapsed = { sec: 0, at: 0 };
+    this.soundEnabled = true;
+    this.audioContext = null;
+
+    // Lịch sử & dữ liệu đã nạp
+    this.sessions = [];
+    this.modelsTabLoaded = false;
+
+    // Luồng video MJPEG
+    this.lastFps = 0;
+    this.streamActive = false;
+    this.streamLost = false;
+    this.streamRetryTimer = null;
+    this.streamRetryDelay = 1000;
+
+    // WebSocket
+    this.ws = null;
+    this.wsEverConnected = false;
 
     this.init();
   }
 
   init() {
-    this.loadSettings();
-    this.loadSettingsFromServer();
-    this.loadModelsList();
     this.bindNavigation();
-    this.bindControls();
+    this.bindSetup();
+    this.bindRunControls();
+    this.bindHistory();
+    this.bindModelsScreen();
+    this.bindSettings();
     this.bindModals();
+    this.bindShortcuts();
+    this.initVideoStream();
     this.initClock();
     this.initWebSocket();
-    this.loadOverviewData();
+
+    this.loadSettings();
+    setInterval(() => this.renderElapsed(), 1000);
+
+    const fromHash = location.hash.replace("#", "");
+    this.switchScreen(SCREENS[fromHash] ? fromHash : "overview");
   }
 
-  // ============================================================================
-  // CÀI ĐẶT & LƯU TRỮ CỤC BỘ & MÁY CHỦ
-  // ============================================================================
-  loadSettings() {
-    try {
-      const saved = localStorage.getItem("conveyorvision_settings");
-      if (saved) {
-        this.settings = Object.assign(this.settings, JSON.parse(saved));
-      }
-      this.soundEnabled = this.settings.soundAlarm !== false;
-      const soundCheck = document.getElementById("sound-alarm-toggle");
-      if (soundCheck) soundCheck.checked = this.soundEnabled;
-    } catch (e) {
-      console.warn("Không thể tải cài đặt cục bộ:", e);
-    }
-  }
-
-  saveSettings() {
-    try {
-      localStorage.setItem("conveyorvision_settings", JSON.stringify(this.settings));
-    } catch (e) {
-      console.warn("Không thể lưu cài đặt cục bộ:", e);
-    }
-  }
-
-  async loadSettingsFromServer() {
-    try {
-      const res = await fetch("/api/settings");
-      if (res.ok) {
-        const data = await res.json();
-        const trackerSel = document.getElementById("setting-tracker");
-        const lostBuf = document.getElementById("setting-lost-buffer");
-        const minVotes = document.getElementById("setting-min-votes");
-        const autoCsv = document.getElementById("setting-auto-csv");
-        const soundAlarm = document.getElementById("setting-sound-alarm");
-
-        if (trackerSel && data.tracker) trackerSel.value = data.tracker;
-        if (lostBuf && data.lost_track_buffer !== undefined) lostBuf.value = data.lost_track_buffer;
-        if (minVotes && data.min_observation_votes !== undefined) minVotes.value = data.min_observation_votes;
-        if (autoCsv && data.auto_save_csv !== undefined) autoCsv.checked = !!data.auto_save_csv;
-        if (soundAlarm && data.sound_alarm !== undefined) {
-          soundAlarm.checked = !!data.sound_alarm;
-          this.soundEnabled = !!data.sound_alarm;
-          const liveSound = document.getElementById("sound-alarm-toggle");
-          if (liveSound) liveSound.checked = this.soundEnabled;
-        }
-      }
-    } catch (e) {
-      console.warn("Lỗi nạp cài đặt từ server:", e);
-    }
-  }
-
-  async saveSettingsToServer() {
-    try {
-      const tracker = document.getElementById("setting-tracker")?.value || "bytetrack.yaml";
-      const lost_track_buffer = parseInt(document.getElementById("setting-lost-buffer")?.value) || 30;
-      const min_observation_votes = parseInt(document.getElementById("setting-min-votes")?.value) || 3;
-      const auto_save_csv = !!document.getElementById("setting-auto-csv")?.checked;
-      const sound_alarm = !!document.getElementById("setting-sound-alarm")?.checked;
-
-      this.soundEnabled = sound_alarm;
-      this.settings.soundAlarm = sound_alarm;
-      this.saveSettings();
-
-      const liveSound = document.getElementById("sound-alarm-toggle");
-      if (liveSound) liveSound.checked = sound_alarm;
-
-      const res = await fetch("/api/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tracker, lost_track_buffer, min_observation_votes, auto_save_csv, sound_alarm })
-      });
-
-      if (res.ok) {
-        const statusSpan = document.getElementById("settings-save-status");
-        if (statusSpan) {
-          statusSpan.style.display = "inline";
-          setTimeout(() => { statusSpan.style.display = "none"; }, 2500);
-        }
-      } else {
-        alert("Không thể lưu cấu hình lên máy chủ.");
-      }
-    } catch (e) {
-      alert(`Lỗi lưu cấu hình: ${e.message}`);
-    }
-  }
-
-  async loadModelsList() {
-    try {
-      const res = await fetch("/api/models");
-      if (!res.ok) return;
-      const models = await res.json();
-      const select = document.getElementById("model-select");
-      if (!select || !models.length) return;
-
-      select.innerHTML = models.map((m) => {
-        const val = m.path || (m.name.startsWith("yolo") ? m.name : `models/${m.name}`);
-        const selected = m.is_active ? "selected" : "";
-        return `<option value="${escapeHtml(val)}" ${selected}>${escapeHtml(m.name)} (${escapeHtml(m.size_mb)} MB)</option>`;
-      }).join("");
-    } catch (e) {
-      console.warn("Lỗi nạp danh sách model:", e);
-    }
-  }
-
-  // ============================================================================
-  // ĐỒNG HỒ TRỰC TIẾP
-  // ============================================================================
-  initClock() {
-    const clockElem = document.getElementById("live-clock");
-    const updateTime = () => {
-      const now = new Date();
-      const pad = (n) => String(n).padStart(2, "0");
-      const timeStr = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-      const dateStr = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`;
-      if (clockElem) {
-        clockElem.textContent = `${timeStr} — ${dateStr}`;
-      }
-    };
-    updateTime();
-    setInterval(updateTime, 1000);
-  }
-
-  // ============================================================================
-  // ĐIỀU HƯỚNG MÀN HÌNH (ROUTING)
-  // ============================================================================
+  // ==========================================================================
+  // ĐIỀU HƯỚNG
+  // ==========================================================================
   bindNavigation() {
-    const navItems = document.querySelectorAll(".nav-item");
-    navItems.forEach((item) => {
-      item.addEventListener("click", () => {
-        const targetScreen = item.getAttribute("data-screen");
-        this.switchScreen(targetScreen);
+    document.querySelectorAll(".nav-item").forEach((btn) => {
+      btn.addEventListener("click", () => this.switchScreen(btn.dataset.screen));
+    });
+    document.querySelectorAll("[data-goto]").forEach((btn) => {
+      btn.addEventListener("click", () => this.switchScreen(btn.dataset.goto));
+    });
+    $("btn-goto-live").addEventListener("click", () => this.switchScreen("live"));
+    $("btn-recheck").addEventListener("click", () => this.refreshReadiness());
+    $("btn-menu").addEventListener("click", () => $("sidebar").classList.toggle("open"));
+  }
+
+  switchScreen(name) {
+    if (!SCREENS[name]) return;
+    this.screen = name;
+
+    document.querySelectorAll(".nav-item").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.screen === name);
+    });
+    document.querySelectorAll(".screen").forEach((section) => {
+      section.classList.toggle("active", section.id === `screen-${name}`);
+    });
+    $("page-title").textContent = SCREENS[name][0];
+    $("page-subtitle").textContent = SCREENS[name][1];
+    $("sidebar").classList.remove("open");
+    history.replaceState(null, "", `#${name}`);
+
+    if (name === "overview") {
+      this.loadOverview();
+      this.refreshReadiness();
+    }
+    if (name === "live" && this.phase() === "setup") this.refreshReadiness();
+    if (name === "history") this.loadHistory();
+    if (name === "models" && !this.modelsTabLoaded) this.loadModelsScreen();
+    if (name === "settings") this.loadSettings();
+    this.syncVideoStream();
+  }
+
+  // ==========================================================================
+  // KIỂM TRA SẴN SÀNG (Tổng quan + bước thiết lập)
+  // ==========================================================================
+  async refreshReadiness() {
+    try {
+      const [check, sources, models] = await Promise.all([
+        api("api/system_check"),
+        api("api/sources"),
+        api("api/models"),
+      ]);
+      this.systemCheck = check;
+      this.sources = sources;
+      this.models = models;
+    } catch (err) {
+      this.systemCheck = null;
+      this.toast(`Không kiểm tra được hệ thống: ${err.message}`, "error");
+    }
+    this.renderReadiness();
+    this.renderSourceList();
+    this.renderModeModels();
+    this.updateStartAvailability();
+  }
+
+  renderReadiness() {
+    const list = $("readiness-list");
+    const c = this.systemCheck;
+    if (!c) {
+      list.innerHTML = `<li class="check-item" data-status="fail"><span class="check-icon"></span><div><strong>Không kết nối được máy chủ</strong><p>Kiểm tra server đang chạy rồi bấm "Kiểm tra lại".</p></div></li>`;
+      return;
+    }
+
+    const items = [
+      c.ultralytics
+        ? ["ok", "Thư viện YOLO (Ultralytics)", "Đã cài đặt"]
+        : ["fail", "Chưa cài Ultralytics", "Chạy: pip install -r requirements.txt"],
+      c.gpu
+        ? ["ok", "Tăng tốc GPU", c.gpu]
+        : ["warn", "Không có GPU", "Chạy bằng CPU — nên dùng độ phân giải 480px"],
+      c.coco_models.length
+        ? ["ok", "Trọng số COCO", `${baseName(c.coco_models[0])} — cho chế độ Chai & Dị vật`]
+        : ["warn", "Chưa có trọng số COCO", "Đặt yolo26n.pt vào models/ để dùng chế độ Chai & Dị vật"],
+      c.custom_models.length
+        ? ["ok", "Checkpoint QC Đạt/Lỗi", `${c.custom_models.length} checkpoint`]
+        : ["warn", "Chưa có checkpoint QC", "Huấn luyện bằng train_pilot.py rồi đặt vào models/"],
+      c.videos > 0
+        ? ["ok", "Video nguồn", `${c.videos} video trong raw_videos/`]
+        : ["warn", "Chưa có video", "Tải video lên ở màn hình Vận hành, hoặc dùng webcam"],
+    ];
+
+    list.innerHTML = items.map(([status, title, desc]) => `
+      <li class="check-item" data-status="${status}">
+        <span class="check-icon"></span>
+        <div><strong>${escapeHtml(title)}</strong><p>${escapeHtml(desc)}</p></div>
+      </li>
+    `).join("");
+  }
+
+  // ==========================================================================
+  // VẬN HÀNH — BƯỚC THIẾT LẬP
+  // ==========================================================================
+  bindSetup() {
+    document.querySelectorAll(".seg-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this.sourceType = btn.dataset.sourceType;
+        document.querySelectorAll(".seg-btn").forEach((b) => b.classList.toggle("active", b === btn));
+        $("source-pane-video").hidden = this.sourceType !== "video";
+        $("source-pane-webcam").hidden = this.sourceType !== "webcam";
+        this.updateStartAvailability();
       });
     });
 
-    const quickStartBtn = document.getElementById("btn-quick-start");
-    if (quickStartBtn) {
-      quickStartBtn.addEventListener("click", () => {
-        this.switchScreen("live");
+    $("video-list").addEventListener("change", (e) => {
+      if (e.target.name === "video-source") {
+        this.selectedVideo = e.target.value;
+        this.updateStartAvailability();
+      }
+    });
+
+    const upload = $("video-file-upload");
+    upload.addEventListener("change", () => {
+      if (upload.files[0]) this.uploadVideo(upload.files[0]);
+      upload.value = "";
+    });
+
+    const dropzone = $("dropzone");
+    ["dragenter", "dragover"].forEach((evt) => dropzone.addEventListener(evt, (e) => {
+      e.preventDefault();
+      dropzone.classList.add("dragover");
+    }));
+    ["dragleave", "drop"].forEach((evt) => dropzone.addEventListener(evt, (e) => {
+      e.preventDefault();
+      dropzone.classList.remove("dragover");
+    }));
+    dropzone.addEventListener("drop", (e) => {
+      const file = e.dataTransfer.files[0];
+      if (file) this.uploadVideo(file);
+    });
+
+    document.querySelectorAll('input[name="mode"]').forEach((radio) => {
+      radio.addEventListener("change", () => {
+        $("custom-model-field").hidden = this.selectedMode() !== "bottle_inspection";
+        this.updateStartAvailability();
       });
-    }
-  }
-
-  switchScreen(screenName) {
-    if (!screenName) return;
-    this.currentScreen = screenName;
-
-    document.querySelectorAll(".nav-item").forEach((item) => {
-      if (item.getAttribute("data-screen") === screenName) {
-        item.classList.add("active");
-      } else {
-        item.classList.remove("active");
-      }
     });
 
-    document.querySelectorAll(".screen-view").forEach((view) => {
-      if (view.id === `screen-${screenName}`) {
-        view.classList.add("active");
+    $("conf-slider").addEventListener("input", () => this.renderAdvancedSummary());
+    $("imgsz-select").addEventListener("change", () => this.renderAdvancedSummary());
+    $("tracker-select").addEventListener("change", () => this.renderAdvancedSummary());
+
+    $("btn-start-inspection").addEventListener("click", () => this.startInspection());
+  }
+
+  selectedMode() {
+    return document.querySelector('input[name="mode"]:checked').value;
+  }
+
+  renderSourceList() {
+    const list = $("video-list");
+    if (!this.sources.length) {
+      this.selectedVideo = null;
+      list.innerHTML = `<div class="empty-inline">Chưa có video nào. Tải lên bên dưới.</div>`;
+      return;
+    }
+    if (!this.sources.some((s) => s.path === this.selectedVideo)) {
+      this.selectedVideo = this.sources[0].path;
+    }
+    list.innerHTML = this.sources.map((s) => `
+      <label class="video-option">
+        <input type="radio" name="video-source" value="${escapeHtml(s.path)}" ${s.path === this.selectedVideo ? "checked" : ""} />
+        <span class="vo-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
+        <span class="vo-meta">${escapeHtml(s.size_mb)} MB</span>
+      </label>
+    `).join("");
+  }
+
+  renderModeModels() {
+    const coco = this.models.filter((m) => m.kind === "coco");
+    const custom = this.models.filter((m) => m.kind === "custom");
+
+    const cocoLabel = $("mode-model-coco");
+    cocoLabel.textContent = coco.length ? coco[0].name : "Chưa có trọng số COCO";
+    cocoLabel.classList.toggle("missing", !coco.length);
+
+    const customLabel = $("mode-model-custom");
+    customLabel.textContent = custom.length ? `${custom.length} checkpoint` : "Chưa có checkpoint";
+    customLabel.classList.toggle("missing", !custom.length);
+
+    const select = $("model-select");
+    const previous = select.value;
+    select.innerHTML = custom.map((m) => `
+      <option value="${escapeHtml(m.path)}">${escapeHtml(m.name)} (${escapeHtml(m.size_mb)} MB)</option>
+    `).join("");
+    const preferred = custom.find((m) => m.path === previous) || custom.find((m) => m.is_active) || custom[0];
+    if (preferred) select.value = preferred.path;
+  }
+
+  renderAdvancedSummary() {
+    const conf = Number($("conf-slider").value).toFixed(2);
+    $("conf-display-val").textContent = conf;
+    const tracker = TRACKER_NAMES[$("tracker-select").value] || $("tracker-select").value;
+    $("advanced-summary").textContent = `${$("imgsz-select").value}px • ${tracker} • conf ${conf}`;
+  }
+
+  /** Trả về lý do không thể bắt đầu, hoặc "" nếu sẵn sàng. */
+  startBlocker() {
+    const c = this.systemCheck;
+    if (!c) return "Đang kiểm tra hệ thống…";
+    if (!c.ultralytics) return "Máy chủ chưa cài Ultralytics (xem Tổng quan).";
+    if (this.sourceType === "video" && !this.selectedVideo) return "Chọn hoặc tải lên một video.";
+    if (this.selectedMode() === "bottle_and_other" && !c.coco_models.length) {
+      return "Chưa có trọng số COCO (yolo26n.pt) trong models/.";
+    }
+    if (this.selectedMode() === "bottle_inspection" && !c.custom_models.length) {
+      return "Chưa có checkpoint QC Đạt/Lỗi trong models/.";
+    }
+    return "";
+  }
+
+  updateStartAvailability() {
+    const blocker = this.startBlocker();
+    $("btn-start-inspection").disabled = !!blocker;
+    $("start-hint").textContent = blocker;
+  }
+
+  uploadVideo(file) {
+    const ext = file.name.split(".").pop().toLowerCase();
+    if (!VIDEO_EXTENSIONS.includes(ext)) {
+      this.toast("Chỉ hỗ trợ file .mp4, .avi, .mov, .mkv", "error");
+      return;
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      this.toast("File vượt quá giới hạn 200MB", "error");
+      return;
+    }
+
+    const progress = $("upload-progress");
+    const bar = $("upload-progress-bar");
+    progress.hidden = false;
+    bar.style.width = "0%";
+
+    // XHR thay vì fetch để có tiến trình tải lên
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "api/upload_video");
+    xhr.upload.addEventListener("progress", (e) => {
+      if (e.lengthComputable) bar.style.width = `${(e.loaded / e.total) * 100}%`;
+    });
+    xhr.addEventListener("load", async () => {
+      progress.hidden = true;
+      let data = {};
+      try {
+        data = JSON.parse(xhr.responseText);
+      } catch (_) {
+        data = {};
+      }
+      if (xhr.status >= 200 && xhr.status < 300 && data.success) {
+        this.selectedVideo = data.source;
+        this.toast(`Đã tải lên ${data.filename}`, "success");
+        await this.refreshReadiness();
       } else {
-        view.classList.remove("active");
+        this.toast(`Tải lên thất bại: ${data.detail || `HTTP ${xhr.status}`}`, "error");
       }
     });
+    xhr.addEventListener("error", () => {
+      progress.hidden = true;
+      this.toast("Mất kết nối khi tải video lên", "error");
+    });
 
-    if (screenName === "overview") this.loadOverviewData();
-    if (screenName === "history") this.loadHistoryData();
-    if (screenName === "evaluation") this.loadEvaluationData();
-    if (screenName === "dataset") this.loadDatasetData();
-    if (screenName === "settings") this.loadSettingsFromServer();
+    const form = new FormData();
+    form.append("file", file);
+    xhr.send(form);
   }
 
-  // ============================================================================
-  // WEBSOCKET & SỰ KIỆN THỜI GIAN THỰC
-  // ============================================================================
-  initWebSocket() {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/ws/events`;
+  async startInspection() {
+    if (this.startBlocker()) return;
 
-    const connect = () => {
-      this.ws = new WebSocket(wsUrl);
+    const mode = this.selectedMode();
+    const model = mode === "bottle_and_other"
+      ? this.systemCheck.coco_models[0]
+      : $("model-select").value;
+    const source = this.sourceType === "webcam"
+      ? String(parseInt($("webcam-index").value, 10) || 0)
+      : this.selectedVideo;
 
-      this.ws.onopen = () => {
-        this.wsConnected = true;
-        console.log("WebSocket connected:", wsUrl);
-      };
+    const btn = $("btn-start-inspection");
+    btn.disabled = true;
+    btn.textContent = "Đang khởi động…";
 
-      this.ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data);
-          this.handleServerEvent(msg);
-        } catch (e) {
-          console.warn("Lỗi phân tích WebSocket JSON:", e);
-        }
-      };
+    this.clearEventLog();
+    $("session-summary").hidden = true;
 
-      this.ws.onclose = () => {
-        this.wsConnected = false;
-        console.warn("WebSocket ngắt kết nối. Đang thử kết nối lại sau 2.5s...");
-        setTimeout(connect, 2500);
-      };
-
-      this.ws.onerror = (err) => {
-        console.error("Lỗi WebSocket:", err);
-      };
-    };
-
-    connect();
-  }
-
-  handleServerEvent(msg) {
-    const { type, payload } = msg;
-
-    if (type === "init_status" || type === "status_changed") {
-      this.updateSystemStatusUI(payload);
-    } else if (type === "stats_update") {
-      this.updateLiveStats(payload);
-    } else if (type === "track_event") {
-      this.handleTrackEvent(payload);
-    } else if (type === "defect_alert") {
-      this.triggerDefectAlert(payload);
-    } else if (type === "session_finished") {
-      this.handleSessionFinished(payload);
+    try {
+      await postJson("api/start_inspection", {
+        source,
+        model,
+        mode,
+        imgsz: parseInt($("imgsz-select").value, 10),
+        conf: parseFloat($("conf-slider").value),
+        tracker: $("tracker-select").value,
+        loop: true,
+      });
+      this.applyStatus(await api("api/status"));
+    } catch (err) {
+      this.toast(`Không thể bắt đầu: ${err.message}`, "error");
+    } finally {
+      btn.textContent = "▶ Bắt đầu kiểm định";
+      this.updateStartAvailability();
     }
   }
 
-  updateSystemStatusUI(status) {
-    const statusPill = document.getElementById("system-status-pill");
-    const statusText = document.getElementById("system-status-text");
-    const btnStart = document.getElementById("btn-start-inspection");
-    const btnPause = document.getElementById("btn-pause-inspection");
-    const btnStop = document.getElementById("btn-stop-inspection");
+  // ==========================================================================
+  // VẬN HÀNH — ĐANG CHẠY
+  // ==========================================================================
+  bindRunControls() {
+    $("btn-pause-inspection").addEventListener("click", () => this.togglePause());
+    $("btn-stop-inspection").addEventListener("click", () => this.stopInspection());
+    $("btn-snapshot").addEventListener("click", () => this.takeSnapshot());
+    $("btn-fullscreen").addEventListener("click", () => this.toggleFullscreen());
 
-    const state = status.state || "STOPPED";
+    $("sound-alarm-toggle").addEventListener("change", (e) => {
+      this.soundEnabled = e.target.checked;
+      $("setting-sound-alarm").checked = this.soundEnabled;
+      postJson("api/settings", { sound_alarm: this.soundEnabled }).catch(() => {});
+    });
+  }
 
-    if (statusPill && statusText) {
-      statusPill.className = "status-pill";
-      if (state === "RUNNING") {
-        statusPill.classList.add("running");
-        statusText.textContent = "Đang kiểm định";
-      } else if (state === "PAUSED") {
-        statusPill.classList.add("paused");
-        statusText.textContent = "Tạm dừng";
-      } else if (state === "ERROR") {
-        statusPill.classList.add("error");
-        statusText.textContent = status.error_message ? `Lỗi: ${status.error_message.substring(0, 30)}` : "Có lỗi xảy ra";
-      } else {
-        statusPill.classList.add("idle");
-        statusText.textContent = "Sẵn sàng";
-      }
+  phase() {
+    return ["RUNNING", "PAUSED"].includes(this.status.state) ? "run" : "setup";
+  }
+
+  applyStatus(status) {
+    this.status = Object.assign({}, this.status, status);
+    const state = this.status.state || "STOPPED";
+
+    const pill = $("state-pill");
+    pill.dataset.state = state;
+    $("state-text").textContent = STATE_LABELS[state] || state;
+
+    const running = state === "RUNNING" || state === "PAUSED";
+    $("nav-live-dot").hidden = !running;
+    $("screen-live").dataset.phase = this.phase();
+
+    $("btn-pause-inspection").textContent = state === "PAUSED" ? "▶ Tiếp tục" : "⏸ Tạm dừng";
+    $("sb-session").textContent = this.status.session_id || "--";
+    $("sb-source").textContent = this.status.source ? baseName(this.status.source) : "--";
+    $("sb-source").title = this.status.source || "";
+    $("sb-model").textContent = this.status.model || "--";
+    $("lk-other").hidden = this.status.mode === "bottle_inspection";
+
+    if (status.elapsed_sec !== undefined) {
+      this.elapsed = { sec: status.elapsed_sec, at: performance.now() };
     }
+    this.renderElapsed();
 
-    if (btnStart) btnStart.disabled = (state === "RUNNING");
-    if (btnPause) {
-      btnPause.disabled = (state === "STOPPED" || state === "ERROR");
-      btnPause.textContent = state === "PAUSED" ? "▶ Tiếp tục" : "⏸ Tạm dừng";
-    }
-    if (btnStop) btnStop.disabled = (state === "STOPPED" || state === "ERROR");
+    const errorCard = $("setup-error");
+    errorCard.hidden = state !== "ERROR";
+    $("setup-error-text").textContent = this.status.error_message || "";
 
-    if (status.model) {
-      const modelTag = document.getElementById("active-model-tag");
-      if (modelTag) modelTag.textContent = status.model;
-    }
+    if (status.fps !== undefined) this.lastFps = status.fps;
+    if (running && status.total_pass !== undefined) this.updateLiveStats(status);
+    this.updateLiveBadge();
+  }
+
+  renderElapsed() {
+    if (this.phase() !== "run") return;
+    const extra = (performance.now() - this.elapsed.at) / 1000;
+    $("sb-elapsed").textContent = formatDuration(this.elapsed.sec + extra);
   }
 
   updateLiveStats(stats) {
-    const elemFps = document.getElementById("live-fps-val");
-    const elemPass = document.getElementById("live-pass-val");
-    const elemDefect = document.getElementById("live-defect-val");
-    const elemOther = document.getElementById("live-other-val");
-    const elemInspecting = document.getElementById("live-inspecting-val");
-    const elemRate = document.getElementById("live-rate-val");
-
-    if (elemFps) elemFps.textContent = stats.fps ?? 0.0;
-    if (elemPass) elemPass.textContent = stats.total_pass ?? 0;
-    if (elemDefect) elemDefect.textContent = stats.total_defect ?? 0;
-    if (elemOther) elemOther.textContent = stats.total_other ?? 0;
-    if (elemInspecting) elemInspecting.textContent = stats.inspecting_count ?? 0;
-    if (elemRate) elemRate.textContent = `${stats.defect_rate ?? 0.0}%`;
-
-    const hudFps = document.getElementById("hud-fps");
-    const hudBelt = document.getElementById("hud-belt");
-    const hudPass = document.getElementById("hud-pass");
-    const hudDefect = document.getElementById("hud-defect");
-    const hudOther = document.getElementById("hud-other");
-
-    if (hudFps) hudFps.textContent = `FPS: ${stats.fps ?? 0.0}`;
-    if (hudBelt) hudBelt.textContent = `Đang quét: ${stats.inspecting_count ?? 0}`;
-    if (hudPass) hudPass.textContent = `PASS: ${stats.total_pass ?? 0}`;
-    if (hudDefect) hudDefect.textContent = `DEFECT: ${stats.total_defect ?? 0}`;
-    if (hudOther) hudOther.textContent = `DỊ VẬT: ${stats.total_other ?? 0}`;
-
-    const banner = document.getElementById("video-rejection-banner");
-    if (banner) {
-      if (stats.alert_active) {
-        banner.classList.add("active");
-        if (stats.alert_message) {
-          banner.textContent = `⚠️ ${stats.alert_message} (MÔ PHỎNG) ⚠️`;
-        }
-      } else {
-        banner.classList.remove("active");
+    const setKpi = (id, value) => {
+      const el = $(id);
+      const text = String(value);
+      if (el.textContent !== text) {
+        el.textContent = text;
+        const card = el.closest(".lk");
+        card.classList.remove("bump");
+        void card.offsetWidth; // khởi động lại animation
+        card.classList.add("bump");
       }
+    };
+    setKpi("live-pass-val", stats.total_pass ?? 0);
+    setKpi("live-defect-val", stats.total_defect ?? 0);
+    setKpi("live-other-val", stats.total_other ?? 0);
+    $("live-inspecting-val").textContent = stats.inspecting_count ?? 0;
+    $("live-rate-val").textContent = `${Number(stats.defect_rate ?? 0).toFixed(1)}%`;
+    $("live-fps-val").textContent = Number(stats.fps ?? 0).toFixed(1);
+    $("live-ms-val").textContent = stats.inference_ms !== undefined ? `${Number(stats.inference_ms).toFixed(1)} ms/frame` : "-- ms";
+
+    this.lastFps = stats.fps ?? 0;
+    if (stats.frame_idx !== undefined) this.status.frame_idx = stats.frame_idx;
+    this.updateLiveBadge();
+
+    const banner = $("video-rejection-banner");
+    banner.classList.toggle("active", !!stats.alert_active);
+    if (stats.alert_active && stats.alert_message) {
+      banner.classList.toggle("other", !stats.alert_message.includes("DEFECT"));
+      banner.textContent = `⚠ ${stats.alert_message} (mô phỏng)`;
     }
+  }
+
+  clearEventLog() {
+    $("live-events-tbody").innerHTML = "";
+    $("live-events-empty").hidden = false;
+    this.eventRows.clear();
   }
 
   handleTrackEvent(item) {
-    const tbody = document.getElementById("live-events-tbody");
-    if (!tbody) return;
-
+    const tbody = $("live-events-tbody");
     const trackId = item.track_id;
-    const isCorrection = item.is_update || item.event === "DEFECT_CORRECTION";
+    const isOther = item.status === "OTHER" || item.category === "OTHER";
+    const isCorrection = item.event === "DEFECT_CORRECTION";
 
-    // Cập nhật tại chỗ nếu track đã tồn tại
-    if (this.eventRows.has(trackId)) {
-      const rowData = this.eventRows.get(trackId);
-      const row = rowData.element;
+    let badgeClass = "inspecting";
+    let badgeText = "Đang quét";
+    let typeClass = "text-warn";
+    if (item.status === "DEFECT") {
+      badgeClass = "defect";
+      badgeText = "DEFECT";
+      typeClass = "text-defect";
+    } else if (item.status === "PASS") {
+      badgeClass = "pass";
+      badgeText = "PASS";
+      typeClass = "text-pass";
+    } else if (isOther) {
+      badgeClass = "other";
+      badgeText = "DỊ VẬT";
+      typeClass = "text-other";
+    }
 
-      if (item.status === "DEFECT") {
-        rowData.statusBadge.className = "badge-status defect";
-        rowData.statusBadge.innerHTML = `DEFECT <span class="badge-updated">Hiệu chỉnh</span>`;
-        rowData.typeElem.textContent = escapeHtml(item.class_name || "Chai lỗi");
-        rowData.typeElem.style.color = "var(--color-defect)";
-        rowData.confElem.textContent = item.conf ? Number(item.conf).toFixed(2) : "--";
-        rowData.timeElem.textContent = item.timestamp || "--";
-
-        row.classList.add("row-updated-highlight");
-        setTimeout(() => row.classList.remove("row-updated-highlight"), 1200);
-
-        if (this.soundEnabled) this.playAlertSound();
-      } else if (item.status === "PASS") {
-        rowData.statusBadge.className = "badge-status pass";
-        rowData.statusBadge.textContent = "PASS";
-        rowData.typeElem.textContent = escapeHtml(item.class_name || "Chai đạt");
-        rowData.typeElem.style.color = "var(--color-pass)";
-        rowData.confElem.textContent = item.conf ? Number(item.conf).toFixed(2) : "--";
-      } else if (item.status === "OTHER" || item.category === "OTHER") {
-        rowData.statusBadge.className = "badge-status other";
-        rowData.statusBadge.textContent = "DỊ VẬT";
-        rowData.typeElem.textContent = escapeHtml(item.class_name || "Vật thể khác");
-        rowData.typeElem.style.color = "#c084fc";
-        rowData.confElem.textContent = item.conf ? Number(item.conf).toFixed(2) : "--";
-        row.classList.add("row-updated-highlight");
-        setTimeout(() => row.classList.remove("row-updated-highlight"), 1200);
-      }
-    } else {
-      // Tạo dòng mới
-      const row = document.createElement("tr");
-
-      let badgeClass = "inspecting";
-      let statusText = "Đang kiểm tra";
-      let typeColor = "var(--color-warning)";
-
-      if (item.status === "DEFECT") {
-        badgeClass = "defect";
-        statusText = "DEFECT";
-        typeColor = "var(--color-defect)";
-        if (isCorrection) statusText += ` <span class="badge-updated">Hiệu chỉnh</span>`;
-      } else if (item.status === "PASS") {
-        badgeClass = "pass";
-        statusText = "PASS";
-        typeColor = "var(--color-pass)";
-      } else if (item.status === "OTHER" || item.category === "OTHER") {
-        badgeClass = "other";
-        statusText = "DỊ VẬT";
-        typeColor = "#c084fc";
-      }
-
-      const confStr = item.conf ? Number(item.conf).toFixed(2) : "--";
-
+    let row = this.eventRows.get(trackId);
+    if (!row) {
+      row = document.createElement("tr");
       row.innerHTML = `
-        <td style="font-family: var(--font-mono); font-weight: 600;">#${escapeHtml(trackId)}</td>
-        <td class="cell-time" style="font-size: 0.8rem; color: var(--text-secondary);">${escapeHtml(item.timestamp || "--")}</td>
-        <td class="cell-type" style="font-weight: 500; color: ${typeColor};">${escapeHtml(item.class_name || "--")}</td>
-        <td class="cell-conf" style="font-family: var(--font-mono);">${escapeHtml(confStr)}</td>
-        <td class="cell-status">
-          <span class="badge-status ${badgeClass}">${statusText}</span>
-        </td>
+        <td class="mono">#${escapeHtml(trackId)}</td>
+        <td class="mono muted cell-time"></td>
+        <td class="cell-type"></td>
+        <td class="num mono cell-conf"></td>
+        <td class="cell-status"></td>
       `;
-
-      if (tbody.children.length > 50) {
-        tbody.removeChild(tbody.lastChild);
-      }
       tbody.insertBefore(row, tbody.firstChild);
+      this.eventRows.set(trackId, row);
+      $("live-events-empty").hidden = true;
 
-      this.eventRows.set(trackId, {
-        element: row,
-        statusBadge: row.querySelector(".cell-status span"),
-        typeElem: row.querySelector(".cell-type"),
-        confElem: row.querySelector(".cell-conf"),
-        timeElem: row.querySelector(".cell-time")
-      });
-    }
-  }
-
-  triggerDefectAlert(payload) {
-    const banner = document.getElementById("video-rejection-banner");
-    if (banner) {
-      banner.classList.add("active");
-      if (payload && payload.message) {
-        banner.textContent = `⚠️ ${payload.message} (MÔ PHỎNG) ⚠️`;
+      while (tbody.children.length > MAX_LOG_ROWS) {
+        const last = tbody.lastElementChild;
+        for (const [id, el] of this.eventRows) {
+          if (el === last) this.eventRows.delete(id);
+        }
+        last.remove();
       }
-      setTimeout(() => banner.classList.remove("active"), 1500);
+    } else if (item.status !== "INSPECTING") {
+      row.classList.remove("row-flash");
+      void row.offsetWidth;
+      row.classList.add("row-flash");
     }
-    if (this.soundEnabled) {
-      this.playAlertSound();
-    }
+
+    row.querySelector(".cell-time").textContent = item.timestamp || "--";
+    const typeCell = row.querySelector(".cell-type");
+    typeCell.textContent = item.class_name || "--";
+    typeCell.className = `cell-type ${typeClass}`;
+    row.querySelector(".cell-conf").textContent = item.conf ? Number(item.conf).toFixed(2) : "--";
+    row.querySelector(".cell-status").innerHTML =
+      `<span class="badge ${badgeClass}">${badgeText}</span>${isCorrection ? '<span class="badge-fix">hiệu chỉnh</span>' : ""}`;
+
+    if (item.status === "DEFECT" && this.soundEnabled) this.playAlertSound();
   }
 
   handleSessionFinished(summary) {
-    this.updateSystemStatusUI({ state: "STOPPED" });
-    alert(`🎉 Phiên kiểm định hoàn tất!\n- Tổng kiểm tra: ${summary.total_items}\n- PASS: ${summary.total_pass}\n- DEFECT: ${summary.total_defect}\n- DỊ VẬT: ${summary.total_other ?? 0}\n- Tỷ lệ lỗi: ${summary.defect_rate}%`);
-    this.loadOverviewData();
+    const card = $("session-summary");
+    const sid = escapeHtml(summary.session_id);
+    card.innerHTML = `
+      <h3>✓ Phiên đã kết thúc</h3>
+      <div class="summary-sub mono">${sid} • ${escapeHtml(formatDuration(summary.duration_sec))}</div>
+      <div class="summary-stats">
+        <div><span>Tổng</span><strong>${escapeHtml(summary.total_items)}</strong></div>
+        <div><span>PASS</span><strong class="text-pass">${escapeHtml(summary.total_pass)}</strong></div>
+        <div><span>DEFECT</span><strong class="text-defect">${escapeHtml(summary.total_defect)}</strong></div>
+        <div><span>Tỷ lệ lỗi</span><strong>${escapeHtml(summary.defect_rate)}%</strong></div>
+      </div>
+      <div class="summary-actions">
+        <button type="button" class="btn btn-secondary btn-sm" data-action="detail">Xem chi tiết</button>
+        <a class="btn btn-ghost btn-sm" href="api/download_report/${encodeURIComponent(summary.session_id)}" download>Tải CSV</a>
+        <button type="button" class="btn btn-ghost btn-sm" data-action="dismiss">Đóng</button>
+      </div>
+    `;
+    card.querySelector('[data-action="detail"]').addEventListener("click", () => this.viewSessionDetail(summary.session_id));
+    card.querySelector('[data-action="dismiss"]').addEventListener("click", () => { card.hidden = true; });
+    card.hidden = false;
+
+    this.toast(`Phiên ${summary.session_id} đã lưu: ${summary.total_items} sản phẩm, ${summary.total_defect} lỗi`, "success");
+    this.loadOverview();
+    if (this.screen === "history") this.loadHistory();
   }
 
-  // ============================================================================
-  // CÒI BÁO PHẾ PHẨM (WEB AUDIO API SYNTHESIZER)
-  // ============================================================================
+  async togglePause() {
+    const endpoint = this.status.state === "PAUSED" ? "api/resume_inspection" : "api/pause_inspection";
+    try {
+      await postJson(endpoint);
+    } catch (err) {
+      this.toast(`Thao tác thất bại: ${err.message}`, "error");
+    }
+  }
+
+  async stopInspection() {
+    const ok = await this.confirm("Kết thúc phiên?", "Phiên sẽ được chốt và lưu vào lịch sử. Không thể tiếp tục phiên này sau khi kết thúc.", "Kết thúc phiên");
+    if (!ok) return;
+    try {
+      await postJson("api/stop_inspection");
+    } catch (err) {
+      this.toast(`Không thể dừng: ${err.message}`, "error");
+    }
+  }
+
+  async takeSnapshot() {
+    try {
+      const data = await postJson("api/snapshot");
+      this.toast(`📸 Đã lưu ảnh — <a href="${escapeHtml(relativeUrl(data.url))}" target="_blank" rel="noopener">mở ảnh</a>`, "success", { html: true });
+    } catch (err) {
+      this.toast(`Không thể chụp: ${err.message}`, "error");
+    }
+  }
+
+  toggleFullscreen() {
+    const box = $("video-viewport-container");
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      box.requestFullscreen().catch((err) => this.toast(`Không thể bật toàn màn hình: ${err.message}`, "error"));
+    }
+  }
+
   playAlertSound() {
     try {
       if (!this.audioContext) {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
         this.audioContext = new AudioCtx();
       }
-      if (this.audioContext.state === "suspended") {
-        this.audioContext.resume();
-      }
+      if (this.audioContext.state === "suspended") this.audioContext.resume();
 
-      const osc = this.audioContext.createOscillator();
-      const gain = this.audioContext.createGain();
-
+      const ctx = this.audioContext;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
       osc.type = "sawtooth";
-      osc.frequency.setValueAtTime(880, this.audioContext.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(440, this.audioContext.currentTime + 0.18);
-
-      gain.gain.setValueAtTime(0.2, this.audioContext.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, this.audioContext.currentTime + 0.2);
-
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.18);
+      gain.gain.setValueAtTime(0.2, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.2);
       osc.connect(gain);
-      gain.connect(this.audioContext.destination);
-
+      gain.connect(ctx.destination);
       osc.start();
-      osc.stop(this.audioContext.currentTime + 0.22);
+      osc.stop(ctx.currentTime + 0.22);
     } catch (e) {
       console.warn("Không thể phát âm thanh cảnh báo:", e);
     }
   }
 
-  // ============================================================================
-  // ĐIỀU KHIỂN NÚT BẤM MÀN HÌNH LIVE INSPECTION
-  // ============================================================================
-  bindControls() {
-    const btnStart = document.getElementById("btn-start-inspection");
-    const btnPause = document.getElementById("btn-pause-inspection");
-    const btnStop = document.getElementById("btn-stop-inspection");
-    const btnSnapshot = document.getElementById("btn-snapshot");
-    const btnFullscreen = document.getElementById("btn-fullscreen");
-    const soundToggle = document.getElementById("sound-alarm-toggle");
-    const btnSaveSettings = document.getElementById("btn-save-settings");
+  // ==========================================================================
+  // LUỒNG VIDEO MJPEG
+  // ==========================================================================
+  initVideoStream() {
+    const img = $("video-stream-feed");
 
-    const confSlider = document.getElementById("conf-slider");
-    const confDisplay = document.getElementById("conf-display-val");
-    if (confSlider && confDisplay) {
-      confSlider.addEventListener("input", (e) => {
-        confDisplay.textContent = Number(e.target.value).toFixed(2);
-      });
+    img.addEventListener("load", () => {
+      this.streamRetryDelay = 1000;
+      if (this.streamLost) {
+        this.streamLost = false;
+        this.updateLiveBadge();
+      }
+    });
+
+    // Mất kết nối → thử lại với backoff tăng dần (1s → 8s)
+    img.addEventListener("error", () => {
+      if (!this.streamActive) return;
+      this.streamLost = true;
+      this.updateLiveBadge();
+      clearTimeout(this.streamRetryTimer);
+      this.streamRetryTimer = setTimeout(() => this.connectVideoStream(true), this.streamRetryDelay);
+      this.streamRetryDelay = Math.min(this.streamRetryDelay * 2, 8000);
+    });
+
+    document.addEventListener("visibilitychange", () => this.syncVideoStream());
+  }
+
+  // Chỉ giữ kết nối stream khi đang ở màn hình Vận hành và tab trình duyệt đang hiển thị
+  syncVideoStream() {
+    const shouldStream = this.screen === "live" && document.visibilityState === "visible";
+    if (shouldStream) {
+      this.connectVideoStream();
+    } else {
+      this.disconnectVideoStream();
     }
+  }
 
-    if (soundToggle) {
-      soundToggle.addEventListener("change", (e) => {
-        this.soundEnabled = e.target.checked;
-        this.settings.soundAlarm = this.soundEnabled;
-        this.saveSettings();
-      });
+  connectVideoStream(force = false) {
+    if (this.streamActive && !force) return;
+    clearTimeout(this.streamRetryTimer);
+    this.streamActive = true;
+    $("video-stream-feed").src = `api/video_feed?t=${Date.now()}`;
+  }
+
+  disconnectVideoStream() {
+    clearTimeout(this.streamRetryTimer);
+    if (!this.streamActive) return;
+    this.streamActive = false;
+    $("video-stream-feed").removeAttribute("src"); // Đóng kết nối HTTP, giải phóng băng thông
+  }
+
+  updateLiveBadge() {
+    const badge = $("video-live-badge");
+    const text = $("video-live-text");
+    const state = this.status.state;
+
+    badge.classList.remove("idle", "paused", "lost");
+    if (this.streamLost) {
+      badge.classList.add("lost");
+      text.textContent = "MẤT TÍN HIỆU • ĐANG KẾT NỐI LẠI";
+    } else if (state === "RUNNING" && !this.status.frame_idx) {
+      badge.classList.add("paused");
+      text.textContent = "ĐANG NẠP MÔ HÌNH…"; // lần đầu nạp model lên GPU có thể mất vài giây
+    } else if (state === "RUNNING") {
+      text.textContent = `TRỰC TIẾP • ${Number(this.lastFps).toFixed(1)} FPS`;
+    } else if (state === "PAUSED") {
+      badge.classList.add("paused");
+      text.textContent = "TẠM DỪNG";
+    } else if (state === "ERROR") {
+      badge.classList.add("lost");
+      text.textContent = "LỖI NGUỒN VIDEO";
+    } else {
+      badge.classList.add("idle");
+      text.textContent = "CHỜ KHỞI CHẠY";
     }
+  }
 
-    const modeSelect = document.getElementById("mode-select");
-    const modeBadge = document.getElementById("active-mode-badge");
-    if (modeSelect && modeBadge) {
-      modeSelect.addEventListener("change", (e) => {
-        if (e.target.value === "bottle_and_other") {
-          modeBadge.textContent = "🍶 Chai & Dị vật khác";
-        } else {
-          modeBadge.textContent = "🔍 QC Chai Đạt / Lỗi";
+  // ==========================================================================
+  // WEBSOCKET
+  // ==========================================================================
+  initWebSocket() {
+    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    const basePath = location.pathname.replace(/[^/]*$/, "");
+    const url = `${protocol}//${location.host}${basePath}ws/events`;
+
+    const setConn = (state, text) => {
+      $("conn-indicator").dataset.state = state;
+      $("conn-text").textContent = text;
+    };
+
+    const connect = () => {
+      this.ws = new WebSocket(url);
+
+      this.ws.addEventListener("open", () => {
+        // Máy chủ vừa khởi động lại → luồng MJPEG cũ đã chết, kết nối lại
+        if (this.wsEverConnected) {
+          if (this.streamActive) this.connectVideoStream(true);
+          this.refreshReadiness();
         }
+        this.wsEverConnected = true;
+        setConn("online", "Đã kết nối máy chủ");
       });
-    }
 
-    const imgszSelect = document.getElementById("imgsz-select");
-    const resBadge = document.getElementById("active-resolution-badge");
-    if (imgszSelect && resBadge) {
-      imgszSelect.addEventListener("change", (e) => {
-        resBadge.textContent = e.target.value === "480" ? "⚡ 480px Fast" : "🎯 640px Chuẩn";
-      });
-    }
-
-    if (btnStart) {
-      btnStart.addEventListener("click", () => this.startInspection());
-    }
-
-    if (btnPause) {
-      btnPause.addEventListener("click", () => this.togglePauseInspection());
-    }
-
-    if (btnStop) {
-      btnStop.addEventListener("click", () => this.stopInspection());
-    }
-
-    if (btnSnapshot) {
-      btnSnapshot.addEventListener("click", () => this.takeSnapshot());
-    }
-
-    if (btnSaveSettings) {
-      btnSaveSettings.addEventListener("click", () => this.saveSettingsToServer());
-    }
-
-    if (btnFullscreen) {
-      btnFullscreen.addEventListener("click", () => {
-        const container = document.getElementById("video-viewport-container");
-        if (container) {
-          if (!document.fullscreenElement) {
-            container.requestFullscreen().catch((err) => alert(`Lỗi toàn màn hình: ${err.message}`));
-          } else {
-            document.exitFullscreen();
-          }
-        }
-      });
-    }
-
-    // Xử lý upload video
-    const uploadInput = document.getElementById("video-file-upload");
-    if (uploadInput) {
-      uploadInput.addEventListener("change", async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-
-        const formData = new FormData();
-        formData.append("file", file);
-
+      this.ws.addEventListener("message", (event) => {
+        if (event.data === "pong") return;
         try {
-          const res = await fetch("/api/upload_video", { method: "POST", body: formData });
-          const data = await res.json();
-          if (data.success) {
-            const sourceSelect = document.getElementById("source-select");
-            const opt = document.createElement("option");
-            opt.value = data.source;
-            opt.textContent = `📁 ${data.filename}`;
-            opt.selected = true;
-            sourceSelect.appendChild(opt);
-            alert(`Đã tải lên thành công: ${data.filename}`);
-          } else {
-            alert(`Tải file thất bại: ${data.detail || "Lỗi không xác định"}`);
-          }
-        } catch (err) {
-          alert(`Lỗi khi tải file video: ${err.message}`);
+          this.handleServerEvent(JSON.parse(event.data));
+        } catch (e) {
+          console.warn("Lỗi phân tích sự kiện WebSocket:", e);
         }
       });
-    }
-  }
 
-  async startInspection() {
-    const source = document.getElementById("source-select")?.value || "raw_videos/conveyor_demo.mp4";
-    const model = document.getElementById("model-select")?.value || "models/conveyor_yolo26_30ep_best.pt";
-    const mode = document.getElementById("mode-select")?.value || "bottle_and_other";
-    const imgsz = parseInt(document.getElementById("imgsz-select")?.value) || 480;
-    const conf = parseFloat(document.getElementById("conf-slider")?.value) || 0.45;
-    const tracker = document.getElementById("tracker-select")?.value || "bytetrack.yaml";
-
-    const tbody = document.getElementById("live-events-tbody");
-    if (tbody) tbody.innerHTML = "";
-    this.eventRows.clear();
-
-    try {
-      const res = await fetch("/api/start_inspection", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source, model, mode, imgsz, conf, tracker, loop: true })
+      this.ws.addEventListener("close", () => {
+        setConn("offline", "Mất kết nối — đang thử lại…");
+        setTimeout(connect, 2500);
       });
-      const data = await res.json();
-      if (!res.ok) {
-        alert(`Không thể bắt đầu: ${data.detail || "Lỗi không xác định"}`);
-        return;
-      }
+    };
 
-      const videoImg = document.getElementById("video-stream-feed");
-      if (videoImg) {
-        videoImg.src = `/api/video_feed?t=${Date.now()}`;
-      }
-    } catch (err) {
-      alert(`Lỗi kết nối tới máy chủ: ${err.message}`);
-    }
+    connect();
+    setInterval(() => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send("ping");
+    }, 25000);
   }
 
-  async togglePauseInspection() {
-    const btnPause = document.getElementById("btn-pause-inspection");
-    const isPaused = btnPause.textContent.includes("Tiếp tục");
-    const endpoint = isPaused ? "/api/resume_inspection" : "/api/pause_inspection";
-
-    try {
-      const res = await fetch(endpoint, { method: "POST" });
-      const data = await res.json();
-      if (!res.ok) alert(`Thao tác thất bại: ${data.detail}`);
-    } catch (err) {
-      alert(`Lỗi: ${err.message}`);
-    }
+  handleServerEvent({ type, payload }) {
+    if (type === "init_status" || type === "status_changed") this.applyStatus(payload);
+    else if (type === "stats_update") this.updateLiveStats(payload);
+    else if (type === "track_event") this.handleTrackEvent(payload);
+    else if (type === "session_finished") this.handleSessionFinished(payload);
   }
 
-  async stopInspection() {
-    if (!confirm("Bạn có chắc muốn kết thúc phiên kiểm định hiện tại?")) return;
+  // ==========================================================================
+  // TỔNG QUAN
+  // ==========================================================================
+  async loadOverview() {
     try {
-      const res = await fetch("/api/stop_inspection", { method: "POST" });
-      const data = await res.json();
-      if (!res.ok) alert(`Lỗi: ${data.detail}`);
-    } catch (err) {
-      alert(`Lỗi: ${err.message}`);
-    }
-  }
-
-  async takeSnapshot() {
-    try {
-      const res = await fetch("/api/snapshot", { method: "POST" });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        alert(`📸 Đã lưu ảnh hiện trường tại:\n${data.path}`);
-      } else {
-        alert(`Không thể chụp ảnh: ${data.detail || "Chưa có khung hình"}`);
-      }
-    } catch (err) {
-      alert(`Lỗi: ${err.message}`);
-    }
-  }
-
-  // ============================================================================
-  // MÀN HÌNH 1: TỔNG QUAN (OVERVIEW)
-  // ============================================================================
-  async loadOverviewData() {
-    try {
-      const [statusRes, historyRes] = await Promise.all([
-        fetch("/api/status"),
-        fetch("/api/history")
-      ]);
-
-      const status = await statusRes.json();
-      const sessions = await historyRes.json();
-
-      this.updateSystemStatusUI(status);
-
-      let totalInspectedAll = 0;
-      let totalPassAll = 0;
-      let totalDefectAll = 0;
-
+      const sessions = await api("api/history");
+      let items = 0;
+      let pass = 0;
+      let defect = 0;
       sessions.forEach((s) => {
-        totalInspectedAll += s.total_items || 0;
-        totalPassAll += s.total_pass || 0;
-        totalDefectAll += s.total_defect || 0;
+        items += s.total_items || 0;
+        pass += s.total_pass || 0;
+        defect += s.total_defect || 0;
       });
 
-      const avgDefectRate = totalInspectedAll > 0
-        ? ((totalDefectAll / totalInspectedAll) * 100).toFixed(1)
-        : "0.0";
+      $("ov-total-sessions").textContent = sessions.length.toLocaleString("vi-VN");
+      $("ov-total-inspected").textContent = items.toLocaleString("vi-VN");
+      $("ov-total-pass").textContent = pass.toLocaleString("vi-VN");
+      $("ov-total-defect").textContent = defect.toLocaleString("vi-VN");
+      $("ov-defect-rate").textContent = `${defectRate(pass, defect)}%`;
 
-      const ovTotal = document.getElementById("ov-total-inspected");
-      const ovPass = document.getElementById("ov-total-pass");
-      const ovDefect = document.getElementById("ov-total-defect");
-      const ovRate = document.getElementById("ov-defect-rate");
-      const ovSessions = document.getElementById("ov-total-sessions");
-
-      if (ovTotal) ovTotal.textContent = totalInspectedAll.toLocaleString();
-      if (ovPass) ovPass.textContent = totalPassAll.toLocaleString();
-      if (ovDefect) ovDefect.textContent = totalDefectAll.toLocaleString();
-      if (ovRate) ovRate.textContent = `${avgDefectRate}%`;
-      if (ovSessions) ovSessions.textContent = sessions.length;
-
-      const tbody = document.getElementById("overview-recent-sessions-tbody");
-      if (tbody) {
-        if (sessions.length === 0) {
-          tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 1.5rem;">Chưa có phiên kiểm định nào được ghi nhận.</td></tr>`;
-        } else {
-          tbody.innerHTML = sessions.slice(0, 5).map((s) => `
-            <tr>
-              <td style="font-family: var(--font-mono); font-weight: 600;">${escapeHtml(s.session_id)}</td>
-              <td style="color: var(--text-secondary);">${escapeHtml(s.start_time)}</td>
-              <td>${escapeHtml(s.source)}</td>
-              <td style="font-weight: 700;">${escapeHtml(s.total_items)}</td>
-              <td><span class="badge-status pass">${escapeHtml(s.total_pass)} PASS</span></td>
-              <td><span class="badge-status defect">${escapeHtml(s.total_defect)} DEFECT</span></td>
-            </tr>
-          `).join("");
-        }
+      const tbody = $("overview-recent-sessions-tbody");
+      if (!sessions.length) {
+        tbody.innerHTML = `<tr><td colspan="7" class="empty">Chưa có phiên nào. Bắt đầu phiên đầu tiên ở màn hình Vận hành.</td></tr>`;
+        return;
       }
-    } catch (e) {
-      console.warn("Lỗi nạp dữ liệu tổng quan:", e);
+      tbody.innerHTML = sessions.slice(0, 5).map((s) => `
+        <tr>
+          <td class="mono">${escapeHtml(s.session_id)}</td>
+          <td class="muted">${escapeHtml(s.start_time)}</td>
+          <td title="${escapeHtml(s.source)}">${escapeHtml(baseName(s.source))}</td>
+          <td class="num"><strong>${escapeHtml(s.total_items)}</strong></td>
+          <td class="num text-pass">${escapeHtml(s.total_pass)}</td>
+          <td class="num text-defect">${escapeHtml(s.total_defect)}</td>
+          <td class="num">${escapeHtml(s.defect_rate)}%</td>
+        </tr>
+      `).join("");
+    } catch (err) {
+      console.warn("Lỗi nạp dữ liệu tổng quan:", err);
     }
   }
 
-  // ============================================================================
-  // MÀN HÌNH 3: LỊCH SỬ KIỂM ĐỊNH (HISTORY)
-  // ============================================================================
-  async loadHistoryData() {
+  // ==========================================================================
+  // LỊCH SỬ PHIÊN
+  // ==========================================================================
+  bindHistory() {
+    $("btn-history-refresh").addEventListener("click", () => this.loadHistory());
+    $("history-search").addEventListener("input", () => this.renderHistory());
+
+    $("history-sessions-tbody").addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-action]");
+      if (!btn) return;
+      const sid = btn.dataset.sid;
+      if (btn.dataset.action === "detail") this.viewSessionDetail(sid);
+      if (btn.dataset.action === "delete") this.deleteSession(sid);
+    });
+  }
+
+  async loadHistory() {
     try {
-      const res = await fetch("/api/history");
-      const sessions = await res.json();
-      const tbody = document.getElementById("history-sessions-tbody");
-      if (!tbody) return;
+      this.sessions = await api("api/history");
+    } catch (err) {
+      this.toast(`Không tải được lịch sử: ${err.message}`, "error");
+      this.sessions = [];
+    }
+    this.renderHistory();
+  }
 
-      if (sessions.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 2rem;">Chưa có lịch sử phiên kiểm định. Hãy khởi chạy phiên đầu tiên tại mục "Kiểm định trực tiếp".</td></tr>`;
-        return;
-      }
+  renderHistory() {
+    const tbody = $("history-sessions-tbody");
+    const q = $("history-search").value.trim().toLowerCase();
+    const rows = this.sessions.filter((s) =>
+      !q || `${s.session_id} ${s.source} ${s.model_name}`.toLowerCase().includes(q));
 
-      tbody.innerHTML = sessions.map((s) => `
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="10" class="empty">${this.sessions.length ? "Không có phiên khớp từ khoá." : "Chưa có phiên nào được lưu."}</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = rows.map((s) => {
+      const [cls, label] = SESSION_STATUS[s.status] || ["", s.status || "--"];
+      const sid = escapeHtml(s.session_id);
+      return `
         <tr>
-          <td style="font-family: var(--font-mono); font-weight: 600;">${escapeHtml(s.session_id)}</td>
-          <td>${escapeHtml(s.start_time)}</td>
-          <td>${s.duration_sec ? `${escapeHtml(s.duration_sec)}s` : "--"}</td>
-          <td>${escapeHtml(s.source)}</td>
-          <td style="font-weight: 700;">${escapeHtml(s.total_items)}</td>
-          <td><span class="badge-status pass">${escapeHtml(s.total_pass)}</span></td>
-          <td><span class="badge-status defect">${escapeHtml(s.total_defect)}</span></td>
-          <td style="font-weight: 600; color: ${s.defect_rate > 15 ? 'var(--color-defect)' : 'var(--text-primary)'};">${escapeHtml(s.defect_rate)}%</td>
+          <td class="mono">${sid}</td>
+          <td class="muted">${escapeHtml(s.start_time)}</td>
+          <td class="num mono">${s.duration_sec ? escapeHtml(formatDuration(s.duration_sec)) : "--"}</td>
+          <td title="${escapeHtml(s.source)}">${escapeHtml(baseName(s.source))}</td>
+          <td class="num"><strong>${escapeHtml(s.total_items)}</strong></td>
+          <td class="num text-pass">${escapeHtml(s.total_pass)}</td>
+          <td class="num text-defect">${escapeHtml(s.total_defect)}</td>
+          <td class="num ${s.defect_rate > 15 ? "text-defect" : ""}">${escapeHtml(s.defect_rate)}%</td>
+          <td><span class="badge ${cls}" title="${escapeHtml(s.error_message || "")}">${escapeHtml(label)}</span></td>
           <td>
-            <div style="display: flex; gap: 0.35rem;">
-              <button class="btn btn-secondary" style="padding: 0.25rem 0.55rem; font-size: 0.78rem;" onclick="app.viewSessionDetail('${escapeHtml(s.session_id)}')">Chi tiết</button>
-              <a href="/api/download_report/${encodeURIComponent(s.session_id)}" class="btn btn-primary" style="padding: 0.25rem 0.55rem; font-size: 0.78rem;" download>Tải CSV</a>
-              <button class="btn btn-danger" style="padding: 0.25rem 0.45rem; font-size: 0.78rem;" onclick="app.deleteSession('${escapeHtml(s.session_id)}')">✕</button>
+            <div class="cell-actions">
+              <button type="button" class="btn btn-secondary btn-sm" data-action="detail" data-sid="${sid}">Chi tiết</button>
+              <a class="btn btn-ghost btn-sm" href="api/download_report/${encodeURIComponent(s.session_id)}" download>CSV</a>
+              <button type="button" class="btn btn-danger btn-sm" data-action="delete" data-sid="${sid}" aria-label="Xoá phiên">✕</button>
             </div>
           </td>
         </tr>
-      `).join("");
-    } catch (e) {
-      console.warn("Lỗi nạp lịch sử:", e);
-    }
+      `;
+    }).join("");
   }
 
   async viewSessionDetail(sessionId) {
+    let session;
     try {
-      const res = await fetch(`/api/history/${encodeURIComponent(sessionId)}`);
-      const session = await res.json();
-      if (!res.ok) return alert("Không tìm thấy thông tin phiên.");
-
-      const title = document.getElementById("session-detail-title");
-      const body = document.getElementById("session-detail-body");
-      if (title) title.textContent = `Chi tiết phiên: ${session.session_id}`;
-
-      const tracks = session.tracks || [];
-      let tracksHtml = "";
-      if (tracks.length === 0) {
-        tracksHtml = `<p style="color: var(--text-muted); margin-top: 1rem;">Không có bản ghi từng chai hoặc chưa chốt sản phẩm nào.</p>`;
-      } else {
-        tracksHtml = `
-          <div class="data-table-container" style="margin-top: 1rem; max-height: 380px;">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Mã Track</th>
-                  <th>Phân loại</th>
-                  <th>Độ tin cậy</th>
-                  <th>Số frame quan sát</th>
-                  <th>Thời gian xuất hiện</th>
-                  <th>Trạng thái</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${tracks.map((t) => `
-                  <tr>
-                    <td style="font-family: var(--font-mono); font-weight: 600;">#${escapeHtml(t.track_id)}</td>
-                    <td style="font-weight: 500; color: ${t.state === 'DEFECT' ? 'var(--color-defect)' : (t.state === 'OTHER' ? '#c084fc' : 'var(--color-pass)')};">${escapeHtml(t.class_name)}</td>
-                    <td style="font-family: var(--font-mono);">${escapeHtml(t.max_conf)}</td>
-                    <td>${escapeHtml(t.obs_votes)} frames</td>
-                    <td>${escapeHtml(t.first_ts)}s → ${escapeHtml(t.last_ts)}s</td>
-                    <td>
-                      <span class="badge-status ${escapeHtml(t.state.toLowerCase())}">${escapeHtml(t.state)}</span>
-                      ${t.was_corrected ? '<span class="badge-updated">Hiệu chỉnh</span>' : ''}
-                    </td>
-                  </tr>
-                `).join("")}
-              </tbody>
-            </table>
-          </div>
-        `;
-      }
-
-      if (body) {
-        body.innerHTML = `
-          <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75rem; margin-bottom: 1rem;">
-            <div class="mini-kpi-card"><div class="label">Tổng kiểm tra</div><div class="val">${escapeHtml(session.total_items)}</div></div>
-            <div class="mini-kpi-card pass"><div class="label">Đạt chuẩn</div><div class="val">${escapeHtml(session.total_pass)}</div></div>
-            <div class="mini-kpi-card defect"><div class="label">Phế phẩm</div><div class="val">${escapeHtml(session.total_defect)}</div></div>
-            <div class="mini-kpi-card rate"><div class="label">Tỷ lệ lỗi</div><div class="val">${escapeHtml(session.defect_rate)}%</div></div>
-          </div>
-          <p><strong>Nguồn kiểm định:</strong> ${escapeHtml(session.source)} | <strong>Model:</strong> ${escapeHtml(session.model_name)}</p>
-          <p><strong>Bắt đầu:</strong> ${escapeHtml(session.start_time)} | <strong>Kết thúc:</strong> ${escapeHtml(session.end_time || '--')} (${escapeHtml(session.duration_sec)}s)</p>
-          ${tracksHtml}
-        `;
-      }
-
-      this.openModal("session-detail-modal");
-    } catch (e) {
-      alert(`Lỗi xem chi tiết: ${e.message}`);
+      session = await api(`api/history/${encodeURIComponent(sessionId)}`);
+    } catch (err) {
+      this.toast(`Không tìm thấy phiên: ${err.message}`, "error");
+      return;
     }
+
+    $("session-detail-title").textContent = `Phiên ${session.session_id}`;
+    const tracks = session.tracks || [];
+    const trackTable = tracks.length
+      ? `
+        <div class="table-wrap">
+          <table class="table table-compact">
+            <thead><tr><th>Track</th><th>Phân loại</th><th class="num">Conf</th><th class="num">Số frame</th><th>Xuất hiện</th><th>Kết quả</th></tr></thead>
+            <tbody>
+              ${tracks.map((t) => {
+                const state = String(t.state || "");
+                const cls = state === "DEFECT" ? "defect" : state === "OTHER" ? "other" : "pass";
+                return `
+                  <tr>
+                    <td class="mono">#${escapeHtml(t.track_id)}</td>
+                    <td>${escapeHtml(t.class_name)}</td>
+                    <td class="num mono">${escapeHtml(t.max_conf)}</td>
+                    <td class="num">${escapeHtml(t.obs_votes)}</td>
+                    <td class="mono muted">${escapeHtml(t.first_ts)}s → ${escapeHtml(t.last_ts)}s</td>
+                    <td><span class="badge ${cls}">${escapeHtml(state)}</span>${t.was_corrected ? '<span class="badge-fix">hiệu chỉnh</span>' : ""}</td>
+                  </tr>`;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>`
+      : `<div class="empty-inline">Phiên này không có sản phẩm nào được chốt.</div>`;
+
+    $("session-detail-body").innerHTML = `
+      <div class="summary-stats">
+        <div><span>Tổng</span><strong>${escapeHtml(session.total_items)}</strong></div>
+        <div><span>PASS</span><strong class="text-pass">${escapeHtml(session.total_pass)}</strong></div>
+        <div><span>DEFECT</span><strong class="text-defect">${escapeHtml(session.total_defect)}</strong></div>
+        <div><span>Tỷ lệ lỗi</span><strong>${escapeHtml(session.defect_rate)}%</strong></div>
+      </div>
+      <div class="detail-meta">
+        <div>Nguồn: <strong>${escapeHtml(session.source)}</strong></div>
+        <div>Mô hình: <strong>${escapeHtml(session.model_name)}</strong></div>
+        <div>Bắt đầu: <strong>${escapeHtml(session.start_time)}</strong></div>
+        <div>Kết thúc: <strong>${escapeHtml(session.end_time || "--")}</strong></div>
+        <div>Thời lượng: <strong>${escapeHtml(formatDuration(session.duration_sec))}</strong></div>
+        <div>Tracker / conf: <strong>${escapeHtml(TRACKER_NAMES[session.tracker] || session.tracker)} / ${escapeHtml(session.conf_thresh)}</strong></div>
+      </div>
+      ${session.error_message ? `<div class="error-card"><strong>Lỗi</strong><p>${escapeHtml(session.error_message)}</p></div>` : ""}
+      <div style="margin: 12px 0 6px; display: flex; justify-content: space-between; align-items: center;">
+        <strong style="color: var(--text);">Sản phẩm đã chốt (${tracks.length})</strong>
+        <a class="btn btn-ghost btn-sm" href="api/download_report/${encodeURIComponent(session.session_id)}" download>Tải CSV</a>
+      </div>
+      ${trackTable}
+    `;
+    this.openModal("session-detail-modal");
   }
 
   async deleteSession(sessionId) {
-    if (!confirm(`Bạn có chắc muốn xóa lịch sử phiên ${sessionId}?`)) return;
+    const ok = await this.confirm("Xoá phiên?", `Phiên ${sessionId} và file CSV của nó sẽ bị xoá vĩnh viễn.`, "Xoá");
+    if (!ok) return;
     try {
-      const res = await fetch(`/api/history/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
-      if (res.ok) {
-        this.loadHistoryData();
-      } else {
-        alert("Không thể xóa phiên.");
-      }
-    } catch (e) {
-      alert(`Lỗi: ${e.message}`);
+      await api(`api/history/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+      this.toast(`Đã xoá phiên ${sessionId}`, "success");
+      this.loadHistory();
+      this.loadOverview();
+    } catch (err) {
+      this.toast(`Không thể xoá: ${err.message}`, "error");
     }
   }
 
-  // ============================================================================
-  // MÀN HÌNH 4: ĐÁNH GIÁ MÔ HÌNH (EVALUATION)
-  // ============================================================================
-  async loadEvaluationData() {
-    try {
-      const res = await fetch("/api/evaluation");
-      const data = await res.json();
-
-      const tbody = document.getElementById("eval-metrics-tbody");
-      if (tbody && data.test_metrics) {
-        const ov = data.test_metrics.overall;
-        let html = `
-          <tr style="background-color: rgba(2, 132, 199, 0.08); font-weight: 700;">
-            <td>Tất cả (Overall)</td>
-            <td>${escapeHtml(data.test_metrics.num_images)}</td>
-            <td>${escapeHtml(data.test_metrics.num_boxes)}</td>
-            <td style="color: var(--color-primary-light);">${escapeHtml(ov.precision)}%</td>
-            <td style="color: var(--color-primary-light);">${escapeHtml(ov.recall)}%</td>
-            <td style="color: var(--color-pass);">${escapeHtml(ov.map50)}%</td>
-            <td style="color: var(--color-pass);">${escapeHtml(ov.map50_95)}%</td>
-          </tr>
-        `;
-
-        data.test_metrics.classes.forEach((c) => {
-          const isDefect = c.name.includes("defect");
-          html += `
-            <tr>
-              <td style="font-weight: 600; color: ${isDefect ? 'var(--color-defect)' : 'var(--color-pass)'};">${escapeHtml(c.name)}</td>
-              <td>${escapeHtml(c.images)}</td>
-              <td>${escapeHtml(c.boxes)}</td>
-              <td>${escapeHtml(c.precision)}%</td>
-              <td>${escapeHtml(c.recall)}%</td>
-              <td style="font-weight: 700;">${escapeHtml(c.map50)}%</td>
-              <td>${escapeHtml(c.map50_95)}%</td>
-            </tr>
-          `;
+  // ==========================================================================
+  // MÔ HÌNH & DỮ LIỆU
+  // ==========================================================================
+  bindModelsScreen() {
+    document.querySelectorAll("#screen-models .tab").forEach((tab) => {
+      tab.addEventListener("click", () => {
+        document.querySelectorAll("#screen-models .tab").forEach((t) => t.classList.toggle("active", t === tab));
+        document.querySelectorAll("#screen-models .tab-pane").forEach((pane) => {
+          pane.classList.toggle("active", pane.id === `tab-${tab.dataset.tab}`);
         });
-        tbody.innerHTML = html;
-      }
-
-      const speed = data.speed_benchmark;
-      const speedContainer = document.getElementById("eval-speed-details");
-      if (speedContainer && speed) {
-        speedContainer.innerHTML = `
-          <p><strong>Thiết bị đo lường:</strong> ${escapeHtml(speed.device)}</p>
-          <p><strong>Thời gian tiền xử lý:</strong> ${escapeHtml(speed.preprocess_ms)} ms/ảnh | <strong>Suy luận (Inference):</strong> ${escapeHtml(speed.inference_ms)} ms/ảnh | <strong>Hậu xử lý:</strong> ${escapeHtml(speed.postprocess_ms)} ms/ảnh</p>
-          <p><strong>Tốc độ thực tế đạt được:</strong> <span style="font-size: 1.15rem; font-weight: 700; color: var(--color-pass);">${escapeHtml(speed.fps_cpu)} FPS (CPU)</span> — Dự kiến: <span style="font-weight: 600; color: var(--color-primary-light);">${escapeHtml(speed.fps_gpu_projected)}</span></p>
-        `;
-      }
-
-      this.initChartTabs(data.charts);
-    } catch (e) {
-      console.warn("Lỗi nạp số liệu đánh giá:", e);
-    }
+      });
+    });
   }
 
-  initChartTabs(charts) {
-    const nav = document.getElementById("chart-tabs-nav");
-    const container = document.getElementById("chart-display-container");
-    if (!nav || !container || !charts) return;
+  loadModelsScreen() {
+    this.modelsTabLoaded = true;
+    // Mỗi tab hiển thị ngay khi dữ liệu của nó về (dataset_info lần đầu phải đọc hàng nghìn file nhãn)
+    const load = (url, render) => api(url).then(render).catch((err) => {
+      this.modelsTabLoaded = false; // thử lại lần sau
+      this.toast(`Không tải được ${url}: ${err.message}`, "warn");
+    });
+    load("api/evaluation", (d) => this.renderEvaluation(d));
+    load("api/models", (d) => this.renderCheckpoints(d));
+    load("api/dataset_info", (d) => this.renderDataset(d));
+  }
 
-    nav.innerHTML = charts.map((ch, idx) => `
-      <button class="chart-tab-btn ${idx === 0 ? 'active' : ''}" data-chart-id="${escapeHtml(ch.id)}">
-        ${escapeHtml(ch.title.split("(")[0])}
-      </button>
-    `).join("");
+  renderEvaluation(data) {
+    $("eval-empty").hidden = !!data.available;
+    $("eval-content").hidden = !data.available;
+    if (!data.available) return;
 
-    const displayChart = (chart) => {
-      container.innerHTML = `
-        <div style="margin-bottom: 0.75rem; text-align: left; width: 100%;">
-          <h4 style="font-size: 1rem; color: var(--text-primary);">${escapeHtml(chart.title)}</h4>
-          <p style="font-size: 0.82rem; color: var(--text-secondary); margin-top: 0.2rem;">${escapeHtml(chart.description)}</p>
-        </div>
-        <img src="${escapeHtml(chart.image_url)}" alt="${escapeHtml(chart.title)}" class="chart-img-preview" onclick="app.openImageZoom('${escapeHtml(chart.image_url)}', '${escapeHtml(chart.title)}')" />
-        <div style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-muted);">💡 Nhấp vào ảnh để phóng to toàn màn hình</div>
+    const pct = (v) => `${escapeHtml(v)}%`;
+    const CLASS_LABELS = { pass: "pass — đạt", defect: "defect — lỗi" };
+
+    $("eval-test-size").textContent = `${data.num_images} ảnh • ${data.num_boxes} box • imgsz ${data.imgsz}`;
+    const ov = data.overall;
+    $("eval-metrics-tbody").innerHTML = `
+      <tr class="row-total">
+        <td>Tất cả</td><td class="num">${escapeHtml(data.num_images)}</td><td class="num">${escapeHtml(data.num_boxes)}</td>
+        <td class="num">${pct(ov.precision)}</td><td class="num">${pct(ov.recall)}</td>
+        <td class="num">${pct(ov.map50)}</td><td class="num">${pct(ov.map50_95)}</td>
+      </tr>
+      ${data.classes.map((c) => `
+        <tr>
+          <td class="${c.name === "defect" ? "text-defect" : "text-pass"}">${escapeHtml(CLASS_LABELS[c.name] || c.name)}</td>
+          <td class="num">${escapeHtml(c.images)}</td><td class="num">${escapeHtml(c.boxes)}</td>
+          <td class="num">${pct(c.precision)}</td><td class="num">${pct(c.recall)}</td>
+          <td class="num"><strong>${pct(c.map50)}</strong></td><td class="num">${pct(c.map50_95)}</td>
+        </tr>`).join("")}
+    `;
+
+    const conf = data.confusion || {};
+    $("eval-confusion").innerHTML = Object.keys(conf).length ? `
+      <p class="muted small">Tại ngưỡng vận hành conf=${escapeHtml(data.confusion_conf)}, theo nhãn thật:</p>
+      <div class="confusion-grid">
+        ${Object.entries(conf).map(([name, c]) => `
+          <div class="confusion-item">
+            <strong class="${name === "defect" ? "text-defect" : "text-pass"}">${escapeHtml(name)}</strong>
+            <span>Đúng <b>${pct(c.correct_pct)}</b></span>
+            <span>Nhầm lớp <b>${pct(c.as_other_class_pct)}</b></span>
+            <span>Bỏ sót <b>${pct(c.missed_pct)}</b></span>
+          </div>`).join("")}
+      </div>` : "";
+
+    const m = data.model;
+    const t = data.training;
+    const rows = [
+      ["Checkpoint", `<span class="mono">${escapeHtml(m.file)}</span>`],
+      ["Kiến trúc", `${escapeHtml(m.architecture)} • ${(m.parameters / 1e6).toFixed(2)}M tham số • ${escapeHtml(m.size_mb)} MB`],
+    ];
+    if (t) {
+      rows.push(["Huấn luyện", `${escapeHtml(t.epochs_run)} epoch (tốt nhất: ${escapeHtml(t.best_epoch)}) • ${escapeHtml(formatDuration(t.time_sec))}`]);
+    }
+    if (data.speed_gpu) {
+      const g = data.speed_gpu;
+      const total = g.preprocess_ms + g.inference_ms + g.postprocess_ms;
+      rows.push([`GPU — ${escapeHtml(g.device)}`, `<span class="speed-big">${(1000 / total).toFixed(0)} FPS</span> <span class="muted mono small">${total.toFixed(1)} ms/ảnh</span>`]);
+    }
+    if (data.speed_cpu) {
+      const c = data.speed_cpu;
+      rows.push([`CPU — ${escapeHtml(c.device)}`, `<span class="speed-big">${escapeHtml(c.fps)} FPS</span> <span class="muted mono small">${(c.preprocess + c.inference + c.postprocess).toFixed(1)} ms/ảnh @${escapeHtml(c.imgsz)}px</span>`]);
+    }
+    rows.push(["Đánh giá lúc", `<span class="mono">${escapeHtml(data.generated_at.replace("T", " "))}</span>`]);
+    $("eval-speed-details").innerHTML = rows.map(([k, v]) => `<div class="speed-row"><span>${k}</span><span>${v}</span></div>`).join("");
+
+    const split = data.dataset_split;
+    const notice = $("eval-split-notice");
+    notice.hidden = !split;
+    if (split) {
+      notice.innerHTML = `
+        <strong>Chia dữ liệu chống rò rỉ</strong>
+        <p>${escapeHtml(split.method)}. Số ảnh val/test có bản gần trùng trong train:
+        split ngẫu nhiên gốc của Roboflow <b>${escapeHtml(split.leak_roboflow_split)}</b> →
+        split theo nhóm <b>${escapeHtml(split.leak_group_split)}</b>. Vì vậy số liệu dưới đây phản ánh khả năng tổng quát hoá thật hơn so với chia ngẫu nhiên.</p>
       `;
+    }
+
+    this.renderCharts(data.charts || []);
+  }
+
+  renderCharts(charts) {
+    const nav = $("chart-tabs-nav");
+    const view = $("chart-display-container");
+    if (!charts.length) {
+      view.innerHTML = `<div class="empty-inline">Không có biểu đồ.</div>`;
+      return;
+    }
+
+    const show = (chart) => {
+      view.innerHTML = `
+        <p>${escapeHtml(chart.description)}</p>
+        <img src="${escapeHtml(relativeUrl(chart.image_url))}" alt="${escapeHtml(chart.title)}" loading="lazy" />
+      `;
+      view.querySelector("img").addEventListener("click", () => this.openImageZoom(relativeUrl(chart.image_url), chart.title));
     };
 
-    displayChart(charts[0]);
-
-    nav.querySelectorAll(".chart-tab-btn").forEach((btn) => {
+    nav.innerHTML = charts.map((ch, i) => `
+      <button type="button" class="chart-tab ${i === 0 ? "active" : ""}" data-idx="${i}">${escapeHtml(ch.title.split("(")[0].trim())}</button>
+    `).join("");
+    nav.querySelectorAll(".chart-tab").forEach((btn) => {
       btn.addEventListener("click", () => {
-        nav.querySelectorAll(".chart-tab-btn").forEach((b) => b.classList.remove("active"));
-        btn.classList.add("active");
-        const chartId = btn.getAttribute("data-chart-id");
-        const chart = charts.find((c) => c.id === chartId);
-        if (chart) displayChart(chart);
+        nav.querySelectorAll(".chart-tab").forEach((b) => b.classList.toggle("active", b === btn));
+        show(charts[Number(btn.dataset.idx)]);
       });
     });
+    show(charts[0]);
   }
 
-  // ============================================================================
-  // MÀN HÌNH 5: DỮ LIỆU & MÔ HÌNH (DATASET & MODELS)
-  // ============================================================================
-  async loadDatasetData() {
+  renderDataset(ds) {
+    if (!ds.splits) return;
+    if (!ds.total_images) {
+      $("dataset-splits-container").innerHTML = "";
+      $("dataset-notes").innerHTML = `<p>Chưa có dữ liệu trong <code>data/</code>. Tải dataset rồi chạy <code>python scripts/prepare_dataset.py</code>.</p>`;
+      return;
+    }
+    const split = (label, s) => `
+      <div class="kpi"><div class="kpi-label">${label}</div><div class="kpi-value">${escapeHtml(s.count)}</div><div class="kpi-sub">${escapeHtml(s.pct)}%</div></div>`;
+    $("dataset-splits-container").innerHTML =
+      split("Train", ds.splits.train) +
+      split("Val", ds.splits.val) +
+      split("Test", ds.splits.test) +
+      `<div class="kpi"><div class="kpi-label">Tổng số ảnh</div><div class="kpi-value">${escapeHtml(ds.total_images)}</div><div class="kpi-sub">${escapeHtml(ds.total_boxes)} box</div></div>`;
+
+    const [pass, defect] = ds.classes;
+    const report = ds.split_report;
+    const sources = report ? Object.entries(report.sources).map(([k, v]) => `<code>${escapeHtml(k)}</code> ${escapeHtml(v)} ảnh`).join(", ") : "";
+    $("dataset-notes").innerHTML = `
+      <p><strong>Nhãn:</strong> lớp 0 <code>pass</code> — ${escapeHtml(pass.description)} (${escapeHtml(pass.boxes)} box, ${escapeHtml(pass.ratio_pct)}%);
+      lớp 1 <code>defect</code> — ${escapeHtml(defect.description)} (${escapeHtml(defect.boxes)} box, ${escapeHtml(defect.ratio_pct)}%).</p>
+      ${report ? `<p><strong>Nguồn ảnh thật (Roboflow):</strong> ${sources}.</p>
+      <p><strong>Cách chia:</strong> ${escapeHtml(report.method)}.</p>` : ""}
+    `;
+  }
+
+  renderCheckpoints(models) {
+    const tbody = $("models-list-tbody");
+    if (!models.length) {
+      tbody.innerHTML = `<tr><td colspan="5" class="empty">Chưa có checkpoint nào trong models/.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = models.map((m) => `
+      <tr>
+        <td class="mono">${escapeHtml(m.name)}</td>
+        <td>${m.kind === "coco"
+          ? '<span class="badge info">COCO — Chai &amp; Dị vật</span>'
+          : '<span class="badge pass">QC Đạt/Lỗi</span>'}</td>
+        <td class="num">${escapeHtml(m.size_mb)} MB</td>
+        <td class="muted">${escapeHtml(m.modified)}</td>
+        <td class="muted">${m.kind === "coco" ? "Trọng số gốc YOLO huấn luyện trên COCO (80 lớp)" : escapeHtml(m.description)}</td>
+      </tr>
+    `).join("");
+  }
+
+  // ==========================================================================
+  // CÀI ĐẶT (giá trị mặc định cho phiên mới)
+  // ==========================================================================
+  bindSettings() {
+    $("setting-conf").addEventListener("input", (e) => {
+      $("setting-conf-val").textContent = Number(e.target.value).toFixed(2);
+    });
+    $("btn-save-settings").addEventListener("click", () => this.saveSettings());
+  }
+
+  async loadSettings() {
     try {
-      const [dsRes, modelsRes] = await Promise.all([
-        fetch("/api/dataset_info"),
-        fetch("/api/models")
-      ]);
+      const s = await api("api/settings");
+      this.defaults = Object.assign(this.defaults, s);
+    } catch (err) {
+      console.warn("Lỗi nạp cài đặt:", err);
+    }
+    const d = this.defaults;
 
-      const ds = await dsRes.json();
-      const models = await modelsRes.json();
+    $("setting-tracker").value = d.tracker;
+    $("setting-conf").value = d.default_conf;
+    $("setting-conf-val").textContent = Number(d.default_conf).toFixed(2);
+    if (d.lost_track_buffer !== undefined) $("setting-lost-buffer").value = d.lost_track_buffer;
+    if (d.min_observation_votes !== undefined) $("setting-min-votes").value = d.min_observation_votes;
+    $("setting-auto-csv").checked = d.auto_save_csv !== false;
+    $("setting-sound-alarm").checked = d.sound_alarm !== false;
 
-      const dsSplits = document.getElementById("dataset-splits-container");
-      if (dsSplits && ds.splits) {
-        dsSplits.innerHTML = `
-          <div class="mini-kpi-card"><div class="label">Tập Huấn luyện (Train)</div><div class="val">${escapeHtml(ds.splits.train.count)} <span style="font-size: 0.9rem; color: var(--text-secondary);">(${escapeHtml(ds.splits.train.pct)}%)</span></div></div>
-          <div class="mini-kpi-card"><div class="label">Tập Kiểm định (Val)</div><div class="val">${escapeHtml(ds.splits.val.count)} <span style="font-size: 0.9rem; color: var(--text-secondary);">(${escapeHtml(ds.splits.val.pct)}%)</span></div></div>
-          <div class="mini-kpi-card"><div class="label">Tập Kiểm thử (Test)</div><div class="val">${escapeHtml(ds.splits.test.count)} <span style="font-size: 0.9rem; color: var(--text-secondary);">(${escapeHtml(ds.splits.test.pct)}%)</span></div></div>
-          <div class="mini-kpi-card rate"><div class="label">Tổng số ảnh chuẩn hóa</div><div class="val">${escapeHtml(ds.total_images)}</div></div>
-        `;
-      }
+    this.soundEnabled = d.sound_alarm !== false;
+    $("sound-alarm-toggle").checked = this.soundEnabled;
 
-      const tbody = document.getElementById("models-list-tbody");
-      if (tbody) {
-        tbody.innerHTML = models.map((m) => `
-          <tr style="${m.is_active ? 'background-color: rgba(16, 185, 129, 0.06);' : ''}">
-            <td style="font-weight: 600; font-family: var(--font-mono);">${escapeHtml(m.name)}</td>
-            <td>${escapeHtml(m.size_mb)} MB</td>
-            <td>${escapeHtml(m.modified)}</td>
-            <td>
-              ${m.is_active
-                ? '<span class="badge-status pass">Đang hoạt động (Active)</span>'
-                : '<span class="badge-status" style="background: rgba(148, 163, 184, 0.1); color: var(--text-secondary);">Dự phòng / Backup</span>'}
-            </td>
-            <td style="font-size: 0.82rem; color: var(--text-secondary);">${escapeHtml(m.description)}</td>
-          </tr>
-        `).join("");
-      }
-    } catch (e) {
-      console.warn("Lỗi nạp dữ liệu dataset:", e);
+    // Điền giá trị mặc định vào bước "Tham số nâng cao" (chỉ khi chưa chạy)
+    if (this.phase() === "setup") {
+      $("tracker-select").value = d.tracker;
+      $("conf-slider").value = d.default_conf;
+    }
+    this.renderAdvancedSummary();
+  }
+
+  async saveSettings() {
+    const payload = {
+      tracker: $("setting-tracker").value,
+      default_conf: parseFloat($("setting-conf").value),
+      lost_track_buffer: parseInt($("setting-lost-buffer").value, 10) || 30,
+      min_observation_votes: parseInt($("setting-min-votes").value, 10) || 3,
+      auto_save_csv: $("setting-auto-csv").checked,
+      sound_alarm: $("setting-sound-alarm").checked,
+    };
+    try {
+      await postJson("api/settings", payload);
+      this.toast("Đã lưu cài đặt", "success");
+      this.loadSettings();
+    } catch (err) {
+      this.toast(`Không thể lưu cài đặt: ${err.message}`, "error");
     }
   }
 
-  // ============================================================================
-  // CÁC HỘP THOẠI (MODALS) & ZOOM ẢNH
-  // ============================================================================
+  // ==========================================================================
+  // MODAL, XÁC NHẬN, TOAST, PHÍM TẮT, ĐỒNG HỒ
+  // ==========================================================================
   bindModals() {
-    const btnHelp = document.getElementById("btn-help-modal");
-    if (btnHelp) {
-      btnHelp.addEventListener("click", () => this.openModal("help-modal"));
-    }
-
-    const btnGuide = document.getElementById("btn-open-guide-modal");
-    if (btnGuide) {
-      btnGuide.addEventListener("click", () => this.openModal("uiux-guide-modal"));
-    }
-
-    // Tab switcher bên trong Modal Hướng Dẫn UI/UX
-    const guideNav = document.getElementById("guide-tabs-nav");
-    if (guideNav) {
-      guideNav.querySelectorAll(".guide-tab-btn").forEach((btn) => {
-        btn.addEventListener("click", () => {
-          guideNav.querySelectorAll(".guide-tab-btn").forEach((b) => b.classList.remove("active"));
-          btn.classList.add("active");
-          const tabKey = btn.getAttribute("data-guide-tab");
-          document.querySelectorAll(".guide-pane").forEach((pane) => {
-            pane.classList.remove("active");
-          });
-          const targetPane = document.getElementById(`guide-pane-${tabKey}`);
-          if (targetPane) targetPane.classList.add("active");
-        });
-      });
-    }
-
-    // Đóng modal khi bấm nút X hoặc backdrop
-    document.querySelectorAll(".modal-close-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const modal = btn.closest(".modal-backdrop");
-        if (modal) modal.classList.remove("open");
+    document.querySelectorAll(".modal").forEach((modal) => {
+      modal.addEventListener("click", (e) => {
+        if (e.target === modal || e.target.closest(".modal-close")) this.closeModal(modal);
       });
     });
+  }
 
-    document.querySelectorAll(".modal-backdrop").forEach((backdrop) => {
-      backdrop.addEventListener("click", (e) => {
-        if (e.target === backdrop) backdrop.classList.remove("open");
-      });
+  openModal(id) {
+    $(id).classList.add("open");
+  }
+
+  closeModal(modal) {
+    modal.classList.remove("open");
+    if (modal.id === "confirm-modal" && this.confirmResolve) {
+      this.confirmResolve(false);
+      this.confirmResolve = null;
+    }
+  }
+
+  openImageZoom(url, title) {
+    $("image-zoom-img").src = url;
+    $("image-zoom-img").alt = title || "";
+    $("image-zoom-title").textContent = title || "Biểu đồ";
+    this.openModal("image-zoom-modal");
+  }
+
+  /** Hộp thoại xác nhận thay cho window.confirm. Trả về Promise<boolean>. */
+  confirm(title, message, okLabel = "Đồng ý") {
+    $("confirm-title").textContent = title;
+    $("confirm-message").textContent = message;
+    $("confirm-ok").textContent = okLabel;
+    this.openModal("confirm-modal");
+    $("confirm-ok").focus();
+
+    return new Promise((resolve) => {
+      this.confirmResolve = resolve;
+      const finish = (value) => {
+        $("confirm-ok").onclick = null;
+        $("confirm-cancel").onclick = null;
+        this.confirmResolve = null;
+        $("confirm-modal").classList.remove("open");
+        resolve(value);
+      };
+      $("confirm-ok").onclick = () => finish(true);
+      $("confirm-cancel").onclick = () => finish(false);
     });
+  }
 
-    // Phím tắt ESC để đóng nhanh mọi Modal
+  toast(message, type = "info", { html = false, timeout = 4500 } = {}) {
+    const el = document.createElement("div");
+    el.className = `toast ${type}`;
+    if (html) el.innerHTML = message;
+    else el.textContent = message;
+    $("toast-region").appendChild(el);
+    setTimeout(() => {
+      el.classList.add("leaving");
+      setTimeout(() => el.remove(), 250);
+    }, timeout);
+  }
+
+  bindShortcuts() {
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
-        document.querySelectorAll(".modal-backdrop.open").forEach((m) => m.classList.remove("open"));
+        document.querySelectorAll(".modal.open").forEach((m) => this.closeModal(m));
+        return;
+      }
+      if (this.screen !== "live" || document.querySelector(".modal.open")) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.target.closest("input, select, textarea, [contenteditable]")) return;
+      if (e.key === " " && e.target.closest("button, a, summary")) return; // để trình duyệt tự kích hoạt nút đang focus
+
+      const key = e.key.toLowerCase();
+      if (key === "f") {
+        e.preventDefault();
+        this.toggleFullscreen();
+      } else if (this.phase() === "run" && key === " ") {
+        e.preventDefault();
+        this.togglePause();
+      } else if (this.phase() === "run" && key === "s") {
+        e.preventDefault();
+        this.takeSnapshot();
       }
     });
   }
 
-  openModal(modalId) {
-    const modal = document.getElementById(modalId);
-    if (modal) modal.classList.add("open");
-  }
-
-  openImageZoom(imgUrl, title) {
-    const modal = document.getElementById("image-zoom-modal");
-    const zoomImg = document.getElementById("image-zoom-img");
-    const zoomTitle = document.getElementById("image-zoom-title");
-    if (modal && zoomImg) {
-      zoomImg.src = imgUrl;
-      if (zoomTitle) zoomTitle.textContent = title || "Xem chi tiết biểu đồ";
-      modal.classList.add("open");
-    }
+  initClock() {
+    const pad = (n) => String(n).padStart(2, "0");
+    const tick = () => {
+      const now = new Date();
+      $("live-clock").textContent =
+        `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())} · ${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`;
+    };
+    tick();
+    setInterval(tick, 1000);
   }
 }
 
-// Khởi tạo ứng dụng khi DOM sẵn sàng
 document.addEventListener("DOMContentLoaded", () => {
   window.app = new ConveyorVisionApp();
 });

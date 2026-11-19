@@ -15,6 +15,7 @@ import logging
 import os
 import threading
 import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -26,6 +27,40 @@ from conveyorvision.inference_conveyor import resolve_track_buffer
 from conveyorvision.web.session_manager import session_manager
 
 logger = logging.getLogger("conveyorvision.worker")
+
+
+class SceneCutDetector:
+    """Phát hiện chuyển cảnh đột ngột (cắt video, đổi camera, video ghép từ ảnh tĩnh).
+
+    So sánh độ chênh xám trung bình (64x36) giữa 2 frame liên tiếp với trung vị của
+    30 frame gần nhất: chuyển cảnh = spike > max(5, 4 × trung vị). Ngưỡng tương đối nên
+    không cắt nhầm khi băng chuyền chạy nhanh (chênh lệch cao nhưng đều đặn).
+    """
+
+    def __init__(self, history: int = 30, ratio: float = 4.0, floor: float = 5.0):
+        self.ratio = ratio
+        self.floor = floor
+        self.prev = None
+        self.diffs = deque(maxlen=history)
+
+    def update(self, frame: np.ndarray) -> bool:
+        gray = cv2.cvtColor(cv2.resize(frame, (64, 36), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY).astype(np.float32)
+        prev, self.prev = self.prev, gray
+        if prev is None:
+            return False
+        diff = float(np.abs(gray - prev).mean())
+        if len(self.diffs) >= 5 and diff > max(self.floor, self.ratio * float(np.median(self.diffs))):
+            return True
+        self.diffs.append(diff)
+        return False
+
+
+def clear_tracker_state(model) -> None:
+    """Xoá các track đang theo dõi (giữ bộ đếm ID tăng dần để không trùng ID cũ)."""
+    for tracker in getattr(getattr(model, "predictor", None), "trackers", None) or []:
+        tracker.tracked_stracks = []
+        tracker.lost_stracks = []
+        tracker.removed_stracks = []
 
 # Bảng dịch nhãn COCO sang tiếng Việt thân thiện
 VIETNAMESE_OBJECT_NAMES: Dict[str, str] = {
@@ -131,20 +166,20 @@ class InspectionWorker:
         """Tạo khung hình tĩnh khi dừng kiểm định hoặc có lỗi."""
         h, w = 480, 640
         img = np.zeros((h, w, 3), dtype=np.uint8)
-        img[:] = (15, 23, 42)  # Dark navy slate #0f172a
+        img[:] = (42, 23, 15)  # Dark navy slate #0f172a (OpenCV dùng thứ tự BGR)
 
         # Vẽ lưới kỹ thuật mờ
         for x in range(0, w, 40):
-            cv2.line(img, (x, 0), (x, h), (30, 41, 59), 1)
+            cv2.line(img, (x, 0), (x, h), (59, 41, 30), 1)
         for y in range(0, h, 40):
-            cv2.line(img, (0, y), (w, y), (30, 41, 59), 1)
+            cv2.line(img, (0, y), (w, y), (59, 41, 30), 1)
 
-        border_color = (68, 68, 239) if is_error else (51, 65, 85)
-        accent_color = (68, 68, 239) if is_error else (2, 132, 199)
+        border_color = (68, 68, 239) if is_error else (85, 65, 51)
+        accent_color = (68, 68, 239) if is_error else (199, 132, 2)
 
         # Viền trạm
         cv2.rectangle(img, (20, 20), (w - 20, h - 20), border_color, 2)
-        cv2.circle(img, (w // 2, h // 2 - 40), 45, (30, 41, 59), -1)
+        cv2.circle(img, (w // 2, h // 2 - 40), 45, (59, 41, 30), -1)
         cv2.circle(img, (w // 2, h // 2 - 40), 45, accent_color, 2)
 
         icon_text = "ERR" if is_error else "LIVE"
@@ -156,7 +191,7 @@ class InspectionWorker:
 
         sub = subtitle if len(subtitle) < 60 else (subtitle[:57] + "...")
         cv2.putText(img, sub, (w // 2 - int(len(sub) * 4.6), h // 2 + 70),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (148, 163, 184), 1)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (184, 163, 148), 1)
 
         _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
         with self._frame_cond:
@@ -168,10 +203,11 @@ class InspectionWorker:
         """Xác định model phù hợp với chế độ kiểm tra được chọn."""
         if mode == "bottle_and_other":
             candidates = [
+                Path("models/yolo26n.pt").resolve(),
                 Path("yolo26n.pt").resolve(),
                 Path("yolov8n.pt").resolve(),
                 Path("models/yolov8n_pilot_best.pt").resolve(),
-                Path("models/conveyor_yolo26_30ep_best.pt").resolve(),
+                Path("models/conveyor_qc_yolo26n.pt").resolve(),
             ]
             for c in candidates:
                 if c.exists() and c.is_file():
@@ -188,7 +224,7 @@ class InspectionWorker:
             return direct_cand.resolve()
 
         candidate_fallbacks = [
-            Path("models/conveyor_yolo26_30ep_best.pt").resolve(),
+            Path("models/conveyor_qc_yolo26n.pt").resolve(),
             Path("models/yolov8n_pilot_best.pt").resolve(),
             Path("yolo26n.pt").resolve(),
             Path("yolov8n.pt").resolve(),
@@ -205,7 +241,7 @@ class InspectionWorker:
     def start(
         self,
         source: str = "raw_videos/conveyor_demo.mp4",
-        model_path: str = "models/conveyor_yolo26_30ep_best.pt",
+        model_path: str = "models/conveyor_qc_yolo26n.pt",
         inspection_mode: str = "bottle_and_other",
         conf_thresh: float = 0.45,
         tracker_config: str = "bytetrack.yaml",
@@ -434,6 +470,7 @@ class InspectionWorker:
         last_frame_wall_time = time.time()
         fps_history = []
         is_coco_model = (len(model.names) >= 80) or ("bottle" in model.names.values())
+        scene_cut_detector = SceneCutDetector()
 
         try:
             while not self._stop_event.is_set():
@@ -463,6 +500,12 @@ class InspectionWorker:
                 self.frame_idx += 1
                 t_start = time.time()
                 curr_ts = self.frame_idx / video_fps
+
+                # Chuyển cảnh đột ngột: vật thể mới thường nằm đúng chỗ vật thể cũ → ByteTrack
+                # nối nhầm thành cùng một ID và đếm thiếu. Xoá track cũ và chốt kết quả ngay.
+                scene_cut = scene_cut_detector.update(frame)
+                if scene_cut:
+                    clear_tracker_state(model)
 
                 # Tối ưu kích thước đầu vào (imgsz) để triệt tiêu độ trễ
                 # Chạy inference kèm tracking ByteTrack
@@ -631,7 +674,8 @@ class InspectionWorker:
                 # Chốt trạng thái cho các vật thể đã đi qua khỏi tầm nhìn (lost >= track_buffer frames)
                 for tid, th in self.track_history.items():
                     if not th["logged"] and th["state"] == "INSPECTING":
-                        if (self.frame_idx - th["last_seen_frame"]) >= track_buffer:
+                        frames_lost = self.frame_idx - th["last_seen_frame"]
+                        if frames_lost >= track_buffer or (scene_cut and frames_lost > 0):
                             total_obs = th["pass_votes"] + th["defect_votes"] + th["other_votes"]
                             if th["other_votes"] >= 2:
                                 th["state"] = "OTHER"
@@ -683,7 +727,7 @@ class InspectionWorker:
                 total_bottles = self.total_pass + self.total_defect
                 self.defect_rate = (self.total_defect / total_bottles * 100) if total_bottles > 0 else 0.0
 
-                # Vẽ HUD & Rejection/Other Banner
+                # Vẽ HUD thống kê lên khung hình (giữ lại trong ảnh chụp hiện trường)
                 overlay = frame.copy()
                 hud_h = 160 if self.inspection_mode == "bottle_and_other" else 135
                 cv2.rectangle(overlay, (10, 10), (330, hud_h), (15, 23, 42), -1)
@@ -700,12 +744,7 @@ class InspectionWorker:
                 else:
                     cv2.putText(frame, f"TY LE LOI          : {self.defect_rate:.1f}%", (20, 128), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 255, 255), 2)
 
-                if self.alert_active:
-                    banner_color = (0, 0, 220) if "DEFECT" in self.alert_message else (180, 0, 180)
-                    cv2.rectangle(frame, (0, 0), (width, 42), banner_color, -1)
-                    banner_txt = f">>> {self.alert_message} <<<"
-                    cv2.putText(frame, banner_txt, (max(10, int(width / 2) - int(len(banner_txt) * 5.2)), 28),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 255, 255), 2)
+                # Banner cảnh báo do giao diện web vẽ (#video-rejection-banner) — không vẽ trùng lên khung hình
 
                 # Nén JPEG chất lượng 72 để giảm 50% băng thông mạng và triệt tiêu độ trễ
                 _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 72])
@@ -735,78 +774,78 @@ class InspectionWorker:
             return
         finally:
             cap.release()
+            try:
+                if self.state != "ERROR":
+                    for tid, th in self.track_history.items():
+                        if not th["logged"]:
+                            total_obs = th["pass_votes"] + th["defect_votes"] + th["other_votes"]
+                            if th["other_votes"] >= 2:
+                                th["state"] = "OTHER"
+                                th["logged"] = True
+                                if csv_writer:
+                                    csv_writer.writerow([f"{th['last_seen_ts']:.2f}", tid, 2, th["display_name"], f"{th['max_conf']:.2f}", "OTHER"])
+                            elif th["defect_votes"] >= 2 or (th["defect_votes"] >= 1 and th["category"] == "BOTTLE_DEFECT"):
+                                th["state"] = "DEFECT"
+                                th["logged"] = True
+                                if csv_writer:
+                                    csv_writer.writerow([f"{th['last_seen_ts']:.2f}", tid, 1, "Chai lỗi", f"{th['max_conf']:.2f}", "DEFECT"])
+                            elif total_obs >= min_votes:
+                                th["state"] = "PASS"
+                                th["logged"] = True
+                                if csv_writer:
+                                    csv_writer.writerow([f"{th['last_seen_ts']:.2f}", tid, 0, "Chai đạt chuẩn", f"{th['max_conf']:.2f}", "PASS"])
+                            else:
+                                th["state"] = "INVALID"
 
-            if self.state != "ERROR":
-                for tid, th in self.track_history.items():
-                    if not th["logged"]:
-                        total_obs = th["pass_votes"] + th["defect_votes"] + th["other_votes"]
-                        if th["other_votes"] >= 2:
-                            th["state"] = "OTHER"
-                            th["logged"] = True
-                            if csv_writer:
-                                csv_writer.writerow([f"{th['last_seen_ts']:.2f}", tid, 2, th["display_name"], f"{th['max_conf']:.2f}", "OTHER"])
-                        elif th["defect_votes"] >= 2 or (th["defect_votes"] >= 1 and th["category"] == "BOTTLE_DEFECT"):
-                            th["state"] = "DEFECT"
-                            th["logged"] = True
-                            if csv_writer:
-                                csv_writer.writerow([f"{th['last_seen_ts']:.2f}", tid, 1, "Chai lỗi", f"{th['max_conf']:.2f}", "DEFECT"])
-                        elif total_obs >= min_votes:
-                            th["state"] = "PASS"
-                            th["logged"] = True
-                            if csv_writer:
-                                csv_writer.writerow([f"{th['last_seen_ts']:.2f}", tid, 0, "Chai đạt chuẩn", f"{th['max_conf']:.2f}", "PASS"])
-                        else:
-                            th["state"] = "INVALID"
+                    self.total_pass = sum(1 for th in self.track_history.values() if th["state"] == "PASS")
+                    self.total_defect = sum(1 for th in self.track_history.values() if th["state"] == "DEFECT")
+                    self.total_other = sum(1 for th in self.track_history.values() if th["state"] == "OTHER")
+                    self.elapsed_sec = time.time() - self.start_timestamp
 
-                self.total_pass = sum(1 for th in self.track_history.values() if th["state"] == "PASS")
-                self.total_defect = sum(1 for th in self.track_history.values() if th["state"] == "DEFECT")
-                self.total_other = sum(1 for th in self.track_history.values() if th["state"] == "OTHER")
-                self.elapsed_sec = time.time() - self.start_timestamp
+                    tracks_summary = [
+                        {
+                            "track_id": th["track_id"],
+                            "state": th["state"],
+                            "class_name": th.get("display_name", th["state"]),
+                            "max_conf": round(th["max_conf"], 2),
+                            "first_ts": round(th["first_ts"], 2),
+                            "last_ts": round(th["last_seen_ts"], 2),
+                            "obs_votes": th["pass_votes"] + th["defect_votes"] + th["other_votes"],
+                            "was_corrected": th.get("was_corrected", False)
+                        }
+                        for th in self.track_history.values()
+                        if th["state"] in ("PASS", "DEFECT", "OTHER")
+                    ]
 
-                tracks_summary = [
-                    {
-                        "track_id": th["track_id"],
-                        "state": th["state"],
-                        "class_name": th.get("display_name", th["state"]),
-                        "max_conf": round(th["max_conf"], 2),
-                        "first_ts": round(th["first_ts"], 2),
-                        "last_ts": round(th["last_seen_ts"], 2),
-                        "obs_votes": th["pass_votes"] + th["defect_votes"] + th["other_votes"],
-                        "was_corrected": th.get("was_corrected", False)
-                    }
-                    for th in self.track_history.values()
-                    if th["state"] in ("PASS", "DEFECT", "OTHER")
-                ]
+                    session_manager.finalize_session(
+                        session_id=self.current_session_id,
+                        total_pass=self.total_pass,
+                        total_defect=self.total_defect,
+                        avg_fps=self.fps,
+                        duration_sec=self.elapsed_sec,
+                        tracks=tracks_summary
+                    )
 
-                session_manager.finalize_session(
-                    session_id=self.current_session_id,
-                    total_pass=self.total_pass,
-                    total_defect=self.total_defect,
-                    avg_fps=self.fps,
-                    duration_sec=self.elapsed_sec,
-                    tracks=tracks_summary
-                )
-
-                self.state = "STOPPED"
-                self._broadcast("session_finished", {
-                    "session_id": self.current_session_id,
-                    "total_pass": self.total_pass,
-                    "total_defect": self.total_defect,
-                    "total_other": self.total_other,
-                    "total_items": self.total_pass + self.total_defect + self.total_other,
-                    "defect_rate": round(self.defect_rate, 1),
-                    "duration_sec": round(self.elapsed_sec, 1)
-                })
-                self._broadcast("status_changed", self.get_status())
-                logger.info(f"Đã hoàn thành phiên: {self.current_session_id}")
-
-            # Đóng CSV sau khi đã ghi xong các track chốt cuối (tránh I/O on closed file)
-            if csv_file:
-                try:
-                    csv_file.flush()
-                    csv_file.close()
-                except Exception:
-                    pass
+                    self.state = "STOPPED"
+                    self._broadcast("session_finished", {
+                        "session_id": self.current_session_id,
+                        "total_pass": self.total_pass,
+                        "total_defect": self.total_defect,
+                        "total_other": self.total_other,
+                        "total_items": self.total_pass + self.total_defect + self.total_other,
+                        "defect_rate": round(self.defect_rate, 1),
+                        "duration_sec": round(self.elapsed_sec, 1)
+                    })
+                    self._broadcast("status_changed", self.get_status())
+                    logger.info(f"Đã hoàn thành phiên: {self.current_session_id}")
+            finally:
+                # Đóng CSV SAU khi đã ghi kết quả chốt cho các track còn dở (trước đây đóng trước → ValueError)
+                if csv_file:
+                    try:
+                        csv_file.flush()
+                        csv_file.close()
+                    except Exception:
+                        pass
 
 
 # Singleton instance

@@ -10,6 +10,7 @@ Cung cấp:
 
 import asyncio
 import csv
+import json
 import logging
 import os
 import re
@@ -51,6 +52,9 @@ SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_UPLOAD_SIZE = 200 * 1024 * 1024  # 200 MB
+VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv")
+# Trọng số COCO gốc (yolo26n.pt, yolov8s.pt...) — dùng cho chế độ "Chai & Dị vật khác"
+COCO_WEIGHTS_RE = re.compile(r"^yolo(v\d+|\d+)[nsmlx]\.pt$", re.IGNORECASE)
 
 
 @asynccontextmanager
@@ -145,39 +149,50 @@ async def index(request: Request):
 # ==============================================================================
 # 2. VIDEO STREAMING (MJPEG)
 # ==============================================================================
-def mjpeg_frame_generator():
-    """Generator stream khung hình JPEG với độ trễ thấp, đồng bộ theo Condition Variable chống lag."""
+MJPEG_BOUNDARY = b"--frame\r\n"
+MJPEG_POLL_SEC = 0.01        # Chu kỳ kiểm tra khung hình mới (~100Hz, không chiếm thread)
+MJPEG_KEEPALIVE_SEC = 1.0    # Gửi lại khung hình hiện tại khi hệ thống đứng yên (giữ kết nối sống)
+
+
+def _mjpeg_part(jpeg: bytes) -> bytes:
+    # Boundary đặt SAU mỗi khung hình: trình duyệt hiển thị ngay, không phải chờ khung kế tiếp
+    return (
+        b"Content-Type: image/jpeg\r\nContent-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n"
+        + jpeg + b"\r\n" + MJPEG_BOUNDARY
+    )
+
+
+async def mjpeg_frame_generator():
+    """Async generator stream khung hình JPEG mới nhất.
+
+    - Không giữ thread của threadpool cho mỗi client (nhiều tab không làm cạn threadpool).
+    - Client chậm tự động bỏ qua khung cũ, luôn nhận khung mới nhất (không tích lũy độ trễ).
+    - Khi hệ thống dừng chỉ gửi keepalive 1 lần/giây thay vì lặp liên tục.
+    """
+    yield MJPEG_BOUNDARY
     last_seq = -1
+    last_sent = 0.0
     while True:
-        with worker._frame_cond:
-            worker._frame_cond.wait_for(
-                lambda: worker._frame_seq != last_seq or worker.state == "STOPPED",
-                timeout=0.25
-            )
-            seq = worker._frame_seq
+        seq = worker._frame_seq
+        now = time.monotonic()
+        if seq != last_seq or now - last_sent >= MJPEG_KEEPALIVE_SEC:
             frame_bytes = worker.latest_jpeg
-
-        if seq != last_seq:
-            last_seq = seq
-        elif frame_bytes:
-            # Không có khung hình mới: gửi lại frame cuối với nhịp chậm để giữ kết nối,
-            # tránh quay vòng vô hạn (hàng chục MB/s) khi hệ thống đã dừng.
-            time.sleep(0.5)
-        else:
-            continue
-
-        if frame_bytes:
-            yield (
-                b"--frame\r\n"
-                b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
-            )
+            if frame_bytes:
+                last_seq, last_sent = seq, now
+                yield _mjpeg_part(frame_bytes)
+        await asyncio.sleep(MJPEG_POLL_SEC)
 
 
 @app.get("/api/video_feed")
 async def video_feed():
     return StreamingResponse(
         mjpeg_frame_generator(),
-        media_type="multipart/x-mixed-replace; boundary=frame"
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -209,7 +224,7 @@ async def websocket_events(websocket: WebSocket):
 # ==============================================================================
 class StartInspectionRequest(BaseModel):
     source: str = "raw_videos/conveyor_demo.mp4"
-    model: str = "models/conveyor_yolo26_30ep_best.pt"
+    model: str = "models/conveyor_qc_yolo26n.pt"
     mode: str = "bottle_and_other"  # "bottle_and_other" hoặc "bottle_inspection"
     conf: float = 0.45
     tracker: str = "bytetrack.yaml"
@@ -302,7 +317,7 @@ async def upload_video(file: UploadFile = File(...)):
     """Cho phép tải file video lên trạm với xác thực bảo mật và giới hạn dung lượng."""
     original_filename = Path(file.filename or "").name
     ext = Path(original_filename).suffix.lower()
-    if ext not in (".mp4", ".avi", ".mov", ".mkv"):
+    if ext not in VIDEO_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Chỉ hỗ trợ file video (.mp4, .avi, .mov, .mkv)")
 
     # Chuẩn hóa tên file an toàn (chống chèn ký tự lạ và Path Traversal)
@@ -482,141 +497,37 @@ async def download_pdf_master():
 # ==============================================================================
 # 6. REST API - ĐÁNH GIÁ MÔ HÌNH (MODEL EVALUATION)
 # ==============================================================================
+EVAL_CHARTS = [
+    ("training_progress", "results.png", "Tiến trình huấn luyện",
+     "Train/Val loss và mAP qua từng epoch của lần huấn luyện đang dùng."),
+    ("confusion_matrix", "test_confusion_matrix_normalized.png", "Ma trận nhầm lẫn (Test)",
+     "Chuẩn hoá theo nhãn thật, tại ngưỡng conf=0.25. Hàng background = bỏ sót / báo nhầm nền."),
+    ("pr_curve", "test_BoxPR_curve.png", "Đường cong Precision – Recall (Test)",
+     "Đánh đổi giữa độ chính xác và độ nhạy cho từng lớp."),
+    ("test_predictions", "test_batch0_pred.jpg", "Dự đoán mẫu trên tập Test",
+     "Bounding box và nhãn mô hình dự đoán trên một batch ảnh thật của tập Test."),
+]
+
+
 @app.get("/api/evaluation")
 async def get_evaluation_data():
-    """Trả về số liệu đánh giá mô hình, đọc cập nhật động từ kết quả huấn luyện mới nhất."""
-    # Tìm file results.csv mới nhất nếu có huấn luyện thêm
-    csv_candidates = []
-    if (REPO_ROOT / "runs").exists():
-        csv_candidates.extend(sorted((REPO_ROOT / "runs").rglob("results.csv"), key=lambda p: p.stat().st_mtime, reverse=True))
-    if (EVAL_DIR / "results.csv").exists():
-        csv_candidates.append(EVAL_DIR / "results.csv")
+    """Số liệu đánh giá THẬT do `evaluate.py --export doc/evaluation` sinh ra (không hardcode)."""
+    metrics_file = EVAL_DIR / "metrics.json"
+    if not metrics_file.exists():
+        return {"available": False, "charts": []}
+    try:
+        data = json.loads(metrics_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        logger.warning(f"Lỗi đọc {metrics_file}: {e}")
+        return {"available": False, "charts": []}
 
-    val_metrics = {
-        "num_images": 533,
-        "precision": 78.7,
-        "recall": 79.3,
-        "map50": 82.0,
-        "map50_95": 58.0,
-        "box_loss": 1.097,
-        "cls_loss": 2.276
-    }
-    training_epochs = 30
-    training_time_sec = 463.2
-
-    if csv_candidates and csv_candidates[0].exists():
-        try:
-            with open(csv_candidates[0], "r", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                rows = list(reader)
-                if rows:
-                    last_row = rows[-1]
-                    clean_row = {k.strip(): v.strip() for k, v in last_row.items()}
-                    if "epoch" in clean_row:
-                        training_epochs = int(float(clean_row["epoch"]))
-                    if "time" in clean_row:
-                        training_time_sec = round(float(clean_row["time"]), 1)
-                    if "metrics/precision(B)" in clean_row:
-                        val_metrics["precision"] = round(float(clean_row["metrics/precision(B)"]) * 100, 1)
-                    if "metrics/recall(B)" in clean_row:
-                        val_metrics["recall"] = round(float(clean_row["metrics/recall(B)"]) * 100, 1)
-                    if "metrics/mAP50(B)" in clean_row:
-                        val_metrics["map50"] = round(float(clean_row["metrics/mAP50(B)"]) * 100, 1)
-                    if "metrics/mAP50-95(B)" in clean_row:
-                        val_metrics["map50_95"] = round(float(clean_row["metrics/mAP50-95(B)"]) * 100, 1)
-                    if "val/box_loss" in clean_row:
-                        val_metrics["box_loss"] = round(float(clean_row["val/box_loss"]), 3)
-                    if "val/cls_loss" in clean_row:
-                        val_metrics["cls_loss"] = round(float(clean_row["val/cls_loss"]), 3)
-        except Exception as e:
-            logger.warning(f"Lỗi đọc results.csv: {e}")
-
-    return {
-        "model_architecture": "YOLO26 Nano (End-to-end NMS-free)",
-        "parameters": "2,504,580 (5.9 GFLOPs)",
-        "weight_size_mb": 5.45,
-        "training_epochs": training_epochs,
-        "training_time_sec": training_time_sec,
-        "validation_metrics": val_metrics,
-        "test_metrics": {
-            "num_images": 441,
-            "num_boxes": 1032,
-            "confusion_matrix_threshold": 0.25,
-            "confusion_matrix_defect_misclassified_pct": 41.0,
-            "overall": {
-                "precision": 78.2,
-                "recall": 75.7,
-                "map50": 82.5,
-                "map50_95": 61.4
-            },
-            "classes": [
-                {
-                    "class_id": 0,
-                    "name": "pass (Đạt chuẩn)",
-                    "images": 381,
-                    "boxes": 991,
-                    "precision": 79.7,
-                    "recall": 66.1,
-                    "map50": 78.9,
-                    "map50_95": 51.2
-                },
-                {
-                    "class_id": 1,
-                    "name": "defect (Khuyết tật/Lỗi)",
-                    "images": 36,
-                    "boxes": 41,
-                    "precision": 76.6,
-                    "recall": 85.4,
-                    "map50": 86.2,
-                    "map50_95": 71.7,
-                    "note": "Recall 85.4% tính theo đường cong PR (IoU=0.5). Ở ngưỡng cắt cố định của ma trận nhầm lẫn (conf=0.25), ~41% mẫu defect bị gán sang pass hoặc bỏ sót."
-                }
-            ]
-        },
-        "speed_benchmark": {
-            "device": "Intel Core i7-8565U CPU @ 1.80GHz",
-            "preprocess_ms": 3.1,
-            "inference_ms": 125.9,
-            "postprocess_ms": 2.4,
-            "total_ms": 131.4,
-            "fps_cpu": 7.9,
-            "fps_gpu_projected": "> 80 FPS (TensorRT / Jetson Orin Nano)"
-        },
-        "data_leakage_warning": {
-            "title": "Lưu ý phương pháp luận — Diễn giải chỉ số & Rủi ro cận trùng (Near-Duplicate Leakage)",
-            "message": "Qua kiểm tra đối sánh hàm băm tri giác (pHash/SSIM), ghi nhận khoảng 53–54 cặp ảnh cận trùng giữa train và test (41 ảnh test có bản sao rất gần trong train, trong đó có 23/36 ảnh test chứa defect). Ngoài ra, toàn bộ tập test chỉ có 41 box defect và tại ngưỡng conf=0.25 của Confusion Matrix có khoảng 41% mẫu defect bị phân loại nhầm. Do đó, mAP 82.5% hiện tại là ngưỡng kỳ vọng tối đa (upper bound) chứ chưa phải bằng chứng tổng quát hóa độc lập ngoài thực địa. Bắt buộc phải chia lại dữ liệu theo video clip / phiên quay độc lập (session-based split) trước khi nghiệm thu.",
-            "pairs_detected": "53 - 54 cặp",
-            "affected_defect_test_images": "23 / 36 ảnh (63.9%)",
-            "test_defect_boxes": 41,
-            "recommendation": "Phân chia tập test theo session sản xuất độc lập và thực hiện ablation study có đối chứng"
-        },
-        "charts": [
-            {
-                "id": "training_progress",
-                "title": "Tiến trình huấn luyện 30 Epochs (Loss & mAP Curves)",
-                "image_url": "/doc/evaluation/results.png",
-                "description": "Biểu đồ biến thiên Train/Val Box Loss, Class Loss và độ dốc hội tụ mAP@50 qua từng epoch."
-            },
-            {
-                "id": "confusion_matrix",
-                "title": "Ma trận nhầm lẫn Test (Normalized Confusion Matrix, conf=0.25)",
-                "image_url": "/doc/evaluation/test_confusion_matrix_normalized.png",
-                "description": "Ma trận chuẩn hóa tại ngưỡng conf=0.25 (khoảng 41% cột defect bị phân loại sang pass ở điểm cắt này)."
-            },
-            {
-                "id": "pr_curve",
-                "title": "Đường cong Precision - Recall (PR Curve)",
-                "image_url": "/doc/evaluation/test_BoxPR_curve.png",
-                "description": "Quan hệ đánh đổi giữa Độ chính xác (Precision) và Độ nhạy (Recall) cho từng lớp sản phẩm."
-            },
-            {
-                "id": "test_predictions",
-                "title": "Hình ảnh nhận diện thực tế trên tập Test",
-                "image_url": "/doc/evaluation/test_batch0_pred.jpg",
-                "description": "Mẫu bounding boxes và nhãn phân loại mô hình dự đoán trên batch thử nghiệm."
-            }
-        ]
-    }
+    data["available"] = True
+    data["charts"] = [
+        {"id": cid, "title": title, "description": desc, "image_url": f"doc/evaluation/{filename}"}
+        for cid, filename, title, desc in EVAL_CHARTS
+        if (EVAL_DIR / filename).exists()
+    ]
+    return data
 
 
 # ==============================================================================
@@ -626,7 +537,7 @@ _dataset_cache: Dict[str, Any] = {}
 
 
 @app.get("/api/dataset_info")
-async def get_dataset_info():
+def get_dataset_info():  # sync → chạy trong threadpool, không chặn event loop khi đọc nhiều file
     """Đếm động số lượng ảnh và bounding boxes thực tế từng lớp từ data/labels/."""
     now = time.time()
     if _dataset_cache and (now - _dataset_cache.get("timestamp", 0)) < 60:
@@ -636,10 +547,11 @@ async def get_dataset_info():
     val_dir = REPO_ROOT / "data" / "images" / "val"
     test_dir = REPO_ROOT / "data" / "images" / "test"
 
-    train_c = len(list(train_dir.glob("*.jpg"))) if train_dir.exists() else 1692
-    val_c = len(list(val_dir.glob("*.jpg"))) if val_dir.exists() else 533
-    test_c = len(list(test_dir.glob("*.jpg"))) if test_dir.exists() else 441
+    train_c = len(list(train_dir.glob("*.jpg"))) if train_dir.exists() else 0
+    val_c = len(list(val_dir.glob("*.jpg"))) if val_dir.exists() else 0
+    test_c = len(list(test_dir.glob("*.jpg"))) if test_dir.exists() else 0
     total_imgs = train_c + val_c + test_c
+    pct = (lambda n: round(n / total_imgs * 100, 1)) if total_imgs else (lambda n: 0.0)
 
     # Đếm số lượng bounding boxes thực tế từng lớp từ thư mục data/labels
     box_counts = {0: 0, 1: 0}
@@ -659,39 +571,48 @@ async def get_dataset_info():
                     except Exception:
                         pass
 
-    total_boxes = sum(box_counts.values()) or 5620
-    pass_boxes = box_counts.get(0, 5096)
-    defect_boxes = box_counts.get(1, 524)
+    total_boxes = sum(box_counts.values())
+    pass_boxes = box_counts.get(0, 0)
+    defect_boxes = box_counts.get(1, 0)
 
-    pass_pct = round(pass_boxes / total_boxes * 100, 1) if total_boxes > 0 else 90.7
-    defect_pct = round(defect_boxes / total_boxes * 100, 1) if total_boxes > 0 else 9.3
+    pass_pct = round(pass_boxes / total_boxes * 100, 1) if total_boxes > 0 else 0.0
+    defect_pct = round(defect_boxes / total_boxes * 100, 1) if total_boxes > 0 else 0.0
+
+    split_report_file = REPO_ROOT / "data" / "split_report.json"
+    split_report = None
+    if split_report_file.exists():
+        try:
+            split_report = json.loads(split_report_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            split_report = None
 
     data = {
         "dataset_name": "ConveyorVision Industrial Bottles",
         "total_images": total_imgs,
         "total_boxes": total_boxes,
         "splits": {
-            "train": {"count": train_c, "pct": round(train_c / total_imgs * 100, 1)},
-            "val": {"count": val_c, "pct": round(val_c / total_imgs * 100, 1)},
-            "test": {"count": test_c, "pct": round(test_c / total_imgs * 100, 1)}
+            "train": {"count": train_c, "pct": pct(train_c)},
+            "val": {"count": val_c, "pct": pct(val_c)},
+            "test": {"count": test_c, "pct": pct(test_c)}
         },
+        "split_report": split_report,
         "classes": [
             {
                 "id": 0,
                 "name": "pass (Đạt chuẩn)",
                 "boxes": pass_boxes,
                 "ratio_pct": pass_pct,
-                "description": "Chai đủ thể tích, nhãn thẳng, nắp đậy khít"
+                "description": "Chai nguyên vẹn (gồm chai trên băng chuyền phân loại rác thải)"
             },
             {
                 "id": 1,
                 "name": "defect (Khuyết tật/Lỗi)",
                 "boxes": defect_boxes,
                 "ratio_pct": defect_pct,
-                "description": "Thiếu nắp, nắp vênh, xước nhãn, nứt vỡ hoặc thiếu thể tích"
+                "description": "Chai bị bóp méo, móp, biến dạng"
             }
         ],
-        "image_resolution": "640x640 (RGB)",
+        "image_resolution": "Huấn luyện ở 640x640 (RGB)",
         "source_format": "YOLOv8/YOLO26 PyTorch Format"
     }
     _dataset_cache["timestamp"] = now
@@ -699,13 +620,13 @@ async def get_dataset_info():
     return data
 
 
-@app.get("/api/models")
-async def get_available_models():
+def _scan_models() -> List[Dict[str, Any]]:
     """Quét và liệt kê các checkpoint trọng số sẵn có trong repository."""
     models_list = []
     seen_paths = set()
 
-    candidate_dirs = [MODELS_DIR, REPO_ROOT / "runs"]
+    # Chỉ models/ là nơi triển khai; runs/ là sản phẩm phụ của huấn luyện (best/last trùng lặp)
+    candidate_dirs = [MODELS_DIR]
     for cdir in candidate_dirs:
         if cdir.exists():
             for pt in cdir.rglob("*.pt"):
@@ -715,16 +636,74 @@ async def get_available_models():
                     rel_path = pt.relative_to(REPO_ROOT).as_posix()
                     size_mb = round(pt.stat().st_size / (1024 * 1024), 2)
                     mtime = datetime.fromtimestamp(pt.stat().st_mtime).strftime("%H:%M %d/%m/%Y")
-                    is_active = (pt.name == "conveyor_yolo26_30ep_best.pt")
+                    is_active = (pt.name == "conveyor_qc_yolo26n.pt")
 
                     models_list.append({
                         "name": pt.name,
+                        "kind": "coco" if COCO_WEIGHTS_RE.match(pt.name) else "custom",
                         "path": rel_path,
                         "size_mb": size_mb,
                         "modified": mtime,
                         "is_active": is_active,
-                        "description": "Mô hình sản xuất chính (30 Epochs, Colab L4/T4)" if is_active else "Checkpoint thử nghiệm / pilot"
+                        "description": "Mô hình QC Đạt/Lỗi đang dùng (YOLO26n, chia dữ liệu theo nhóm)" if is_active else "Checkpoint thử nghiệm / pilot"
                     })
 
     models_list.sort(key=lambda m: (not m["is_active"], m["name"]))
     return models_list
+
+
+@app.get("/api/models")
+async def get_available_models():
+    return _scan_models()
+
+
+# ==============================================================================
+# 9. NGUỒN VIDEO & KIỂM TRA SẴN SÀNG HỆ THỐNG
+# ==============================================================================
+def _list_videos() -> List[Path]:
+    if not RAW_VIDEOS_DIR.exists():
+        return []
+    videos = [p for p in RAW_VIDEOS_DIR.iterdir() if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS]
+    return sorted(videos, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+@app.get("/api/sources")
+async def get_sources():
+    """Liệt kê các file video có sẵn trong raw_videos/ (mới nhất trước)."""
+    return [
+        {
+            "name": p.name,
+            "path": f"raw_videos/{p.name}",
+            "size_mb": round(p.stat().st_size / (1024 * 1024), 2),
+            "modified": datetime.fromtimestamp(p.stat().st_mtime).strftime("%H:%M %d/%m/%Y"),
+        }
+        for p in _list_videos()
+    ]
+
+
+@app.get("/api/system_check")
+def system_check():
+    """Kiểm tra điều kiện cần để chạy kiểm định: thư viện, GPU, trọng số, video.
+
+    Hàm sync để FastAPI chạy trong threadpool — lần đầu import torch mất vài giây.
+    """
+    import importlib.util
+
+    has_ultralytics = importlib.util.find_spec("ultralytics") is not None
+    gpu_name = None
+    if importlib.util.find_spec("torch") is not None:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                gpu_name = torch.cuda.get_device_name(0)
+        except Exception as e:
+            logger.warning(f"Không thể kiểm tra GPU: {e}")
+
+    models = _scan_models()
+    return {
+        "ultralytics": has_ultralytics,
+        "gpu": gpu_name,
+        "coco_models": [m["path"] for m in models if m["kind"] == "coco"],
+        "custom_models": [m["path"] for m in models if m["kind"] == "custom"],
+        "videos": len(_list_videos()),
+    }
