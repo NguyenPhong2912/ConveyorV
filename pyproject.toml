@@ -8,7 +8,7 @@ version = "2.0.0"
 description = "Hệ thống phân loại sản phẩm trên băng chuyền sử dụng YOLO26"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 authors = [
     {name = "ConveyorVision Team", email = "contact@conveyorvision.com"}
 ]
@@ -20,8 +20,6 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -48,6 +46,7 @@ dependencies = [
 dev = [
     "pytest==8.3.4",
     "pytest-cov>=4.0.0",
+    "httpx>=0.28.1",
     "black>=23.0.0",
     "flake8>=6.0.0",
     "mypy>=1.0.0",
@@ -80,7 +79,7 @@ norecursedirs = [".venv", "data", "runs", "raw_datasets", "raw_videos", "doc", "
 
 [tool.black]
 line-length = 100
-target-version = ["py39", "py310", "py311", "py312"]
+target-version = ["py311", "py312"]
 include = '\.pyi?$'
 exclude = '''
 /(
@@ -100,7 +99,7 @@ exclude = '''
 '''
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
