@@ -24,7 +24,6 @@ conveyorvision/
   scripts/
     prepare_dataset.py         # chuẩn hoá 3 dataset Roboflow + chia theo nhóm chống rò rỉ
     make_demo_videos.py        # video demo từ ảnh thật của tập test
-    generate_pdf_*.py          # tạo tài liệu PDF (ReportLab)
   models/                      # conveyor_qc_yolo26n.pt (QC Đạt/Lỗi), yolo26n.pt (COCO)
   tests/                       # bộ unit test tự động (pytest)
   reports/                     # log kết quả kiểm định CSV và báo cáo

@@ -132,7 +132,7 @@ def test_sources_api(client, tmp_path, monkeypatch):
     old_video.write_bytes(b"x")
     os.utime(old_video, (1_000_000, 1_000_000))
     (tmp_path / "new.MOV").write_bytes(b"x")
-    (tmp_path / "notes.txt").write_text("không phải video")
+    (tmp_path / "notes.txt").write_text("không phải video", encoding="utf-8")
     monkeypatch.setattr(server, "RAW_VIDEOS_DIR", tmp_path)
 
     res = client.get("/api/sources")
@@ -268,42 +268,6 @@ def test_worker_multi_mode_support():
     status = worker.get_status()
     assert "total_other" in status
     assert status["total_other"] == 0
-
-
-def test_download_pdf_report_api(client):
-    """Kiểm tra API tải báo cáo tổng kết dạng PDF."""
-    res = client.get("/api/download_pdf_report")
-    assert res.status_code == 200
-    assert res.headers["content-type"] == "application/pdf"
-    assert "BaoCao_TongKet_ConveyorVision.pdf" in res.headers.get("content-disposition", "")
-    assert len(res.content) > 100000
-
-
-def test_download_pdf_uiux_api(client):
-    """Kiểm tra API tải cẩm nang hướng dẫn sử dụng UI/UX dạng PDF."""
-    res = client.get("/api/download_pdf_uiux")
-    assert res.status_code == 200
-    assert res.headers["content-type"] == "application/pdf"
-    assert "HuongDan_SuDung_UIUX_ConveyorVision.pdf" in res.headers.get("content-disposition", "")
-    assert len(res.content) > 50000
-
-
-def test_download_pdf_handbook_api(client):
-    """Kiểm tra API tải cẩm nang toàn tập A đến Z dạng PDF."""
-    res = client.get("/api/download_pdf_handbook")
-    assert res.status_code == 200
-    assert res.headers["content-type"] == "application/pdf"
-    assert "ConveyorVision_Toan_Tap_A_Den_Z.pdf" in res.headers.get("content-disposition", "")
-    assert len(res.content) > 100000
-
-
-def test_download_pdf_master_api(client):
-    """Kiểm tra API tải tài liệu kỹ thuật toàn diện dạng PDF."""
-    res = client.get("/api/download_pdf_master")
-    assert res.status_code == 200
-    assert res.headers["content-type"] == "application/pdf"
-    assert "TaiLieu_KyThuat_ToanDien_ConveyorVision.pdf" in res.headers.get("content-disposition", "")
-    assert len(res.content) > 100000
 
 
 # ==============================================================================
