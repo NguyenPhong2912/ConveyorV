@@ -1,0 +1,408 @@
+{
+ "video": "video_bang_truyen.mp4",
+ "video_sha256": "d03245f34be6cf79115bf1a383e389ac9abed26587f4a65ee1804f6b4f0f2db5",
+ "frames": 721,
+ "fps": 24.02,
+ "model": "conveyor_yolo26_30ep_best.pt",
+ "model_sha256": "b9c06fd30e896c168f3d656dbed521020984046e06cb7f44060a8435e9f1e59f",
+ "mode": "bottle_inspection",
+ "imgsz": 640,
+ "conf": 0.45,
+ "frames_processed": 721,
+ "wall_seconds": 55.4,
+ "worker_avg_fps": 16.9,
+ "tracks_total": 11,
+ "summary": {
+  "PASS": 10,
+  "DEFECT": 0,
+  "OTHER": 0,
+  "INVALID": 1
+ },
+ "frames_with_wide_box": 25,
+ "frames_with_tight_box": 68,
+ "tight_box_frames": [
+  117,
+  184,
+  188,
+  189,
+  190,
+  191,
+  253,
+  254,
+  255,
+  256,
+  257,
+  258,
+  259,
+  260,
+  261,
+  262,
+  263,
+  301,
+  302,
+  303,
+  304,
+  305,
+  317,
+  318,
+  319,
+  320,
+  321,
+  322,
+  323,
+  415,
+  416,
+  417,
+  419,
+  420,
+  421,
+  422,
+  423,
+  424,
+  425,
+  426,
+  427,
+  428,
+  429,
+  430,
+  431,
+  432,
+  433,
+  434,
+  470,
+  471,
+  472,
+  473,
+  474,
+  657,
+  660,
+  661,
+  662,
+  663,
+  664,
+  665,
+  666,
+  667,
+  669,
+  670,
+  698,
+  704,
+  707,
+  711
+ ],
+ "tracks": [
+  {
+   "track_id": 1,
+   "state": "INVALID",
+   "category": "BOTTLE_PASS",
+   "display_name": "PASS (Đạt chuẩn)",
+   "first_ts": 4.87,
+   "last_ts": 4.87,
+   "boxes": 1,
+   "mean_area": 0.276,
+   "max_area": 0.276,
+   "pass_votes": 1,
+   "defect_votes": 0,
+   "other_votes": 0,
+   "max_conf": 0.6,
+   "best_frame": 117,
+   "best_box": [
+    0.2522,
+    0.1335,
+    0.5702,
+    1.0
+   ]
+  },
+  {
+   "track_id": 3,
+   "state": "PASS",
+   "category": "BOTTLE_PASS",
+   "display_name": "PASS (Đạt chuẩn)",
+   "first_ts": 7.66,
+   "last_ts": 7.95,
+   "boxes": 5,
+   "mean_area": 0.104,
+   "max_area": 0.146,
+   "pass_votes": 5,
+   "defect_votes": 0,
+   "other_votes": 0,
+   "max_conf": 0.84,
+   "best_frame": 189,
+   "best_box": [
+    0.303,
+    0.6526,
+    0.6079,
+    0.9856
+   ]
+  },
+  {
+   "track_id": 4,
+   "state": "PASS",
+   "category": "BOTTLE_PASS",
+   "display_name": "PASS (Đạt chuẩn)",
+   "first_ts": 10.53,
+   "last_ts": 10.95,
+   "boxes": 11,
+   "mean_area": 0.067,
+   "max_area": 0.093,
+   "pass_votes": 11,
+   "defect_votes": 0,
+   "other_votes": 0,
+   "max_conf": 0.88,
+   "best_frame": 257,
+   "best_box": [
+    0.4283,
+    0.525,
+    0.617,
+    0.963
+   ]
+  },
+  {
+   "track_id": 5,
+   "state": "PASS",
+   "category": "BOTTLE_PASS",
+   "display_name": "PASS (Đạt chuẩn)",
+   "first_ts": 12.53,
+   "last_ts": 12.7,
+   "boxes": 5,
+   "mean_area": 0.037,
+   "max_area": 0.045,
+   "pass_votes": 5,
+   "defect_votes": 0,
+   "other_votes": 0,
+   "max_conf": 0.84,
+   "best_frame": 302,
+   "best_box": [
+    0.4302,
+    0.6759,
+    0.5832,
+    0.9652
+   ]
+  },
+  {
+   "track_id": 6,
+   "state": "PASS",
+   "category": "BOTTLE_PASS",
+   "display_name": "PASS (Đạt chuẩn)",
+   "first_ts": 12.99,
+   "last_ts": 13.53,
+   "boxes": 6,
+   "mean_area": 0.763,
+   "max_area": 0.84,
+   "pass_votes": 6,
+   "defect_votes": 0,
+   "other_votes": 0,
+   "max_conf": 0.55,
+   "best_frame": 320,
+   "best_box": [
+    0.2222,
+    0.0014,
+    1.0,
+    0.9493
+   ]
+  },
+  {
+   "track_id": 7,
+   "state": "PASS",
+   "category": "BOTTLE_PASS",
+   "display_name": "PASS (Đạt chuẩn)",
+   "first_ts": 13.2,
+   "last_ts": 13.45,
+   "boxes": 7,
+   "mean_area": 0.148,
+   "max_area": 0.163,
+   "pass_votes": 7,
+   "defect_votes": 0,
+   "other_votes": 0,
+   "max_conf": 0.71,
+   "best_frame": 321,
+   "best_box": [
+    0.4196,
+    0.5381,
+    0.8127,
+    0.9518
+   ]
+  },
+  {
+   "track_id": 8,
+   "state": "PASS",
+   "category": "BOTTLE_PASS",
+   "display_name": "PASS (Đạt chuẩn)",
+   "first_ts": 17.28,
+   "last_ts": 18.07,
+   "boxes": 19,
+   "mean_area": 0.1,
+   "max_area": 0.137,
+   "pass_votes": 19,
+   "defect_votes": 0,
+   "other_votes": 0,
+   "max_conf": 0.83,
+   "best_frame": 430,
+   "best_box": [
+    0.3981,
+    0.2798,
+    0.5687,
+    0.8895
+   ]
+  },
+  {
+   "track_id": 10,
+   "state": "PASS",
+   "category": "BOTTLE_PASS",
+   "display_name": "PASS (Đạt chuẩn)",
+   "first_ts": 19.57,
+   "last_ts": 19.73,
+   "boxes": 5,
+   "mean_area": 0.077,
+   "max_area": 0.086,
+   "pass_votes": 5,
+   "defect_votes": 0,
+   "other_votes": 0,
+   "max_conf": 0.73,
+   "best_frame": 471,
+   "best_box": [
+    0.2062,
+    0.6893,
+    0.5132,
+    0.961
+   ]
+  },
+  {
+   "track_id": 11,
+   "state": "PASS",
+   "category": "BOTTLE_PASS",
+   "display_name": "PASS (Đạt chuẩn)",
+   "first_ts": 22.73,
+   "last_ts": 25.06,
+   "boxes": 19,
+   "mean_area": 0.964,
+   "max_area": 0.992,
+   "pass_votes": 19,
+   "defect_votes": 0,
+   "other_votes": 0,
+   "max_conf": 0.61,
+   "best_frame": 552,
+   "best_box": [
+    0.0199,
+    0.0,
+    0.9958,
+    0.9993
+   ]
+  },
+  {
+   "track_id": 17,
+   "state": "PASS",
+   "category": "BOTTLE_PASS",
+   "display_name": "PASS (Đạt chuẩn)",
+   "first_ts": 27.35,
+   "last_ts": 27.89,
+   "boxes": 11,
+   "mean_area": 0.143,
+   "max_area": 0.163,
+   "pass_votes": 11,
+   "defect_votes": 0,
+   "other_votes": 0,
+   "max_conf": 0.73,
+   "best_frame": 664,
+   "best_box": [
+    0.1695,
+    0.553,
+    0.5744,
+    0.9436
+   ]
+  },
+  {
+   "track_id": 20,
+   "state": "PASS",
+   "category": "BOTTLE_PASS",
+   "display_name": "PASS (Đạt chuẩn)",
+   "first_ts": 29.06,
+   "last_ts": 29.6,
+   "boxes": 4,
+   "mean_area": 0.141,
+   "max_area": 0.168,
+   "pass_votes": 4,
+   "defect_votes": 0,
+   "other_votes": 0,
+   "max_conf": 0.54,
+   "best_frame": 704,
+   "best_box": [
+    0.4276,
+    0.4941,
+    0.7921,
+    0.9333
+   ]
+  }
+ ],
+ "manual_labels": {
+  "1": "NONE",
+  "3": "B2",
+  "4": "B3",
+  "5": "B4",
+  "6": "WIDE",
+  "7": "O4",
+  "8": "O10",
+  "10": "B6",
+  "11": "WIDE",
+  "17": "B7",
+  "20": "B8"
+ },
+ "evaluation": {
+  "gt_bottles": 8,
+  "counted_tracks": 10,
+  "counted_pass": 10,
+  "counted_defect": 0,
+  "count_error": 2,
+  "bottles_found": [
+   "B2",
+   "B3",
+   "B4",
+   "B6",
+   "B7",
+   "B8"
+  ],
+  "bottles_missed": [
+   "B1",
+   "B5"
+  ],
+  "extra_tracks_on_same_bottle": 0,
+  "false_tracks": 4,
+  "false_tracks_on_other_objects": {
+   "O4": [
+    7
+   ],
+   "O10": [
+    8
+   ]
+  },
+  "false_tracks_wide_box": [
+   6,
+   11
+  ],
+  "false_tracks_on_background": [],
+  "recall_bottle": 0.75,
+  "precision_tracks": 0.6,
+  "assignment": {
+   "B1": [],
+   "B2": [
+    3
+   ],
+   "B3": [
+    4
+   ],
+   "B4": [
+    5
+   ],
+   "B5": [],
+   "B6": [
+    10
+   ],
+   "B7": [
+    17
+   ],
+   "B8": [
+    20
+   ]
+  }
+ }
+}

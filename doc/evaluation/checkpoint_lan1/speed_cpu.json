@@ -1,0 +1,23 @@
+{
+ "cpu": "Intel Core i7-8565U 1.80GHz",
+ "frames_timed": 60,
+ "unit": "ms/khung",
+ "results": {
+  "predict_640": {
+   "ms": 84.8,
+   "fps": 11.8
+  },
+  "track_640": {
+   "ms": 84.4,
+   "fps": 11.8
+  },
+  "predict_480": {
+   "ms": 60.6,
+   "fps": 16.5
+  },
+  "track_480": {
+   "ms": 59.8,
+   "fps": 16.7
+  }
+ }
+}

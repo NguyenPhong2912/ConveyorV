@@ -1,0 +1,30 @@
+{
+  "input_kind": "demo",
+  "video": "conveyor_demo.mp4",
+  "video_sha256": "3b64fc4ecaaf12b20a2479990b4aa4b23f07499a04b611af2035b28e28ffa46a",
+  "predictions_csv": "inspection_SES_20261120_104756.csv",
+  "checkpoint": "conveyor_yolo26_30ep_best.pt",
+  "checkpoint_sha256": "b9c06fd30e896c168f3d656dbed521020984046e06cb7f44060a8435e9f1e59f",
+  "device": "cpu · Intel64 Family 6 Model 142 Stepping 12, GenuineIntel",
+  "mode": "bottle_inspection",
+  "imgsz": 480,
+  "conf": 0.45,
+  "tracker": "bytetrack.yaml",
+  "track_buffer": 30,
+  "min_observation_votes": 3,
+  "frames": 150,
+  "source_fps": 10.0,
+  "processing_fps": 13.451,
+  "latency_ms": {
+    "p50": 54.256,
+    "p95": 114.589
+  },
+  "wall_fps_including_startup_and_optional_recording": 13.219,
+  "timed_stages": "decode, YOLO, tracking, voting, CSV, overlay and JPEG encoding",
+  "versions": {
+    "python": "3.14.8",
+    "torch": "2.14.1+cpu",
+    "opencv": "5.0.0",
+    "ultralytics": "8.4.175"
+  }
+}

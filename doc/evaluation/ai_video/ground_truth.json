@@ -1,0 +1,142 @@
+{
+ "video": "video_bang_truyen.mp4",
+ "source": "Video do nhóm tự tạo bằng công cụ AI sinh video (cảnh tổng hợp, không phải quay tại băng chuyền thật).",
+ "note": "Đáp án đếm thủ công: xem video khung hình 0,5 giây một lần rồi kiểm lại các chỗ có hai vật chồng thời gian bằng khung cách 6 khung, sau đó đối chiếu với một lần đếm độc lập thứ hai trên cùng các khung hình (cả hai lần cùng cho 8 chai; lần hai tách can sữa thành hai can, và đáp án đã sửa theo đó). Thời điểm là giây (khung / 24), có sai số khoảng 0,1 đến 0,2 giây. kind=bottle là chai có cổ chai (nhựa hoặc thủy tinh); mọi vật khác là other.",
+ "fps_reference": 24,
+ "objects": [
+  {
+   "id": "B1",
+   "name": "Chai nước nhựa trong, cỡ lớn",
+   "kind": "bottle",
+   "condition": "nguyên vẹn",
+   "t_in": 0.9,
+   "t_out": 3.9
+  },
+  {
+   "id": "B2",
+   "name": "Chai nước ngọt xanh lá cỡ lớn, đáy nhăn",
+   "kind": "bottle",
+   "condition": "móp nhẹ ở đáy",
+   "t_in": 4.85,
+   "t_out": 8.1
+  },
+  {
+   "id": "B3",
+   "name": "Chai nước nhỏ nắp xanh, thứ nhất",
+   "kind": "bottle",
+   "condition": "nguyên vẹn",
+   "t_in": 8.1,
+   "t_out": 10.9
+  },
+  {
+   "id": "B4",
+   "name": "Chai nước nhỏ nắp xanh, thứ hai",
+   "kind": "bottle",
+   "condition": "nguyên vẹn",
+   "t_in": 9.65,
+   "t_out": 12.8
+  },
+  {
+   "id": "B5",
+   "name": "Chai bia thủy tinh nâu",
+   "kind": "bottle",
+   "condition": "nguyên vẹn",
+   "t_in": 12.4,
+   "t_out": 15.75
+  },
+  {
+   "id": "B6",
+   "name": "Chai nhựa trong bị ép bẹp, nắp xanh",
+   "kind": "bottle",
+   "condition": "bẹp nặng",
+   "t_in": 16.75,
+   "t_out": 19.75
+  },
+  {
+   "id": "B7",
+   "name": "Chai nước ngọt xanh lá cỡ lớn, đáy nhăn (trông giống B2, lần đi qua thứ hai)",
+   "kind": "bottle",
+   "condition": "móp nhẹ ở đáy",
+   "t_in": 24.9,
+   "t_out": 27.85
+  },
+  {
+   "id": "B8",
+   "name": "Chai nước ngọt xanh dương",
+   "kind": "bottle",
+   "condition": "nguyên vẹn",
+   "t_in": 26.4,
+   "t_out": 29.75
+  },
+  {
+   "id": "O1",
+   "name": "Tấm bìa các-tông",
+   "kind": "other",
+   "t_in": 1.9,
+   "t_out": 5.45
+  },
+  {
+   "id": "O2",
+   "name": "Lon thiếc thân cam (lần 1)",
+   "kind": "other",
+   "t_in": 3.75,
+   "t_out": 6.75
+  },
+  {
+   "id": "O3",
+   "name": "Giấy nâu nhàu",
+   "kind": "other",
+   "t_in": 6.4,
+   "t_out": 9.25
+  },
+  {
+   "id": "O4",
+   "name": "Can sữa nhựa thứ nhất (nằm ngang)",
+   "kind": "other",
+   "t_in": 10.55,
+   "t_out": 13.55
+  },
+  {
+   "id": "O5",
+   "name": "Lon nước ngọt xanh dương",
+   "kind": "other",
+   "t_in": 13.85,
+   "t_out": 16.75
+  },
+  {
+   "id": "O6",
+   "name": "Cốc giấy trắng (cốc 1)",
+   "kind": "other",
+   "t_in": 18.3,
+   "t_out": 21.3
+  },
+  {
+   "id": "O7",
+   "name": "Cốc giấy trắng (cốc 2)",
+   "kind": "other",
+   "t_in": 18.3,
+   "t_out": 21.3
+  },
+  {
+   "id": "O8",
+   "name": "Lon thiếc thân cam (lần 2)",
+   "kind": "other",
+   "t_in": 20.35,
+   "t_out": 23.25
+  },
+  {
+   "id": "O9",
+   "name": "Lon thiếc nắp bạc",
+   "kind": "other",
+   "t_in": 22.4,
+   "t_out": 25.75
+  },
+  {
+   "id": "O10",
+   "name": "Can sữa nhựa thứ hai (dựng đứng, có chữ viết tay)",
+   "kind": "other",
+   "t_in": 14.9,
+   "t_out": 18.3
+  }
+ ]
+}

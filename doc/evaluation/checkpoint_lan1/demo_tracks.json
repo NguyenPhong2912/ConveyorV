@@ -1,0 +1,126 @@
+{
+ "640": {
+  "frames": 150,
+  "tracks": {
+   "1": {
+    "first": 1,
+    "last": 93,
+    "detections": 68,
+    "pass_votes": 31,
+    "defect_votes": 37,
+    "max_defect_conf": 0.8711287379264832,
+    "state": "DEFECT",
+    "decided_at": 1
+   },
+   "9": {
+    "first": 49,
+    "last": 57,
+    "detections": 5,
+    "pass_votes": 5,
+    "defect_votes": 0,
+    "max_defect_conf": 0.0,
+    "state": "PASS",
+    "decided_at": 87
+   },
+   "24": {
+    "first": 63,
+    "last": 68,
+    "detections": 5,
+    "pass_votes": 5,
+    "defect_votes": 0,
+    "max_defect_conf": 0.0,
+    "state": "PASS",
+    "decided_at": 98
+   },
+   "36": {
+    "first": 89,
+    "last": 91,
+    "detections": 2,
+    "pass_votes": 2,
+    "defect_votes": 0,
+    "max_defect_conf": 0.0,
+    "state": "INVALID",
+    "decided_at": 121
+   },
+   "124": {
+    "first": 140,
+    "last": 140,
+    "detections": 1,
+    "pass_votes": 1,
+    "defect_votes": 0,
+    "max_defect_conf": 0.0,
+    "state": "INVALID",
+    "decided_at": "150 (hết video)"
+   },
+   "125": {
+    "first": 140,
+    "last": 150,
+    "detections": 2,
+    "pass_votes": 2,
+    "defect_votes": 0,
+    "max_defect_conf": 0.0,
+    "state": "INVALID",
+    "decided_at": "150 (hết video)"
+   }
+  }
+ },
+ "480": {
+  "frames": 150,
+  "tracks": {
+   "1": {
+    "first": 1,
+    "last": 91,
+    "detections": 50,
+    "pass_votes": 21,
+    "defect_votes": 29,
+    "max_defect_conf": 0.8835471868515015,
+    "state": "DEFECT",
+    "decided_at": 1
+   },
+   "18": {
+    "first": 53,
+    "last": 57,
+    "detections": 3,
+    "pass_votes": 3,
+    "defect_votes": 0,
+    "max_defect_conf": 0.0,
+    "state": "PASS",
+    "decided_at": 87
+   },
+   "24": {
+    "first": 63,
+    "last": 93,
+    "detections": 25,
+    "pass_votes": 19,
+    "defect_votes": 6,
+    "max_defect_conf": 0.8556531667709351,
+    "state": "DEFECT",
+    "decided_at": 72
+   },
+   "126": {
+    "first": 140,
+    "last": 140,
+    "detections": 1,
+    "pass_votes": 1,
+    "defect_votes": 0,
+    "max_defect_conf": 0.0,
+    "state": "INVALID",
+    "decided_at": "150 (hết video)"
+   },
+   "141": {
+    "first": 146,
+    "last": 146,
+    "detections": 1,
+    "pass_votes": 1,
+    "defect_votes": 0,
+    "max_defect_conf": 0.0,
+    "state": "INVALID",
+    "decided_at": "150 (hết video)"
+   }
+  }
+ },
+ "low_score_640": {
+  "detections_conf_ge_0.1": 406,
+  "detections_below_0.45": 173
+ }
+}

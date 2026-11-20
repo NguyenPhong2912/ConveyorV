@@ -1,0 +1,98 @@
+{
+ "val_conf0.001": {
+  "labels": [
+   "pass",
+   "defect",
+   "background"
+  ],
+  "matrix_pred_by_true": [
+   [
+    1011,
+    34,
+    8442
+   ],
+   [
+    22,
+    64,
+    757
+   ],
+   [
+    19,
+    1,
+    0
+   ]
+  ]
+ },
+ "val_conf0.45": {
+  "labels": [
+   "pass",
+   "defect",
+   "background"
+  ],
+  "matrix_pred_by_true": [
+   [
+    695,
+    0,
+    171
+   ],
+   [
+    0,
+    87,
+    15
+   ],
+   [
+    357,
+    12,
+    0
+   ]
+  ]
+ },
+ "test_conf0.001": {
+  "labels": [
+   "pass",
+   "defect",
+   "background"
+  ],
+  "matrix_pred_by_true": [
+   [
+    939,
+    17,
+    7670
+   ],
+   [
+    30,
+    24,
+    331
+   ],
+   [
+    22,
+    0,
+    0
+   ]
+  ]
+ },
+ "test_conf0.45": {
+  "labels": [
+   "pass",
+   "defect",
+   "background"
+  ],
+  "matrix_pred_by_true": [
+   [
+    656,
+    0,
+    165
+   ],
+   [
+    0,
+    37,
+    8
+   ],
+   [
+    335,
+    4,
+    0
+   ]
+  ]
+ }
+}

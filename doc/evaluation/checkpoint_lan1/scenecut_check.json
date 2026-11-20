@@ -1,0 +1,282 @@
+{
+ "640_nocut": {
+  "cuts": [],
+  "tracks": {
+   "1": {
+    "first": 1,
+    "last": 93,
+    "p": 31,
+    "d": 37,
+    "dmax": 0.8711287379264832,
+    "state": "DEFECT",
+    "at": 1
+   },
+   "9": {
+    "first": 49,
+    "last": 57,
+    "p": 5,
+    "d": 0,
+    "dmax": 0.0,
+    "state": "PASS",
+    "at": 87
+   },
+   "24": {
+    "first": 63,
+    "last": 68,
+    "p": 5,
+    "d": 0,
+    "dmax": 0.0,
+    "state": "PASS",
+    "at": 98
+   },
+   "36": {
+    "first": 89,
+    "last": 91,
+    "p": 2,
+    "d": 0,
+    "dmax": 0.0,
+    "state": "INVALID",
+    "at": 121
+   },
+   "124": {
+    "first": 140,
+    "last": 140,
+    "p": 1,
+    "d": 0,
+    "dmax": 0.0,
+    "state": "INVALID",
+    "at": "end"
+   },
+   "125": {
+    "first": 140,
+    "last": 150,
+    "p": 2,
+    "d": 0,
+    "dmax": 0.0,
+    "state": "INVALID",
+    "at": "end"
+   }
+  }
+ },
+ "640_cut": {
+  "cuts": [
+   14,
+   24,
+   26
+  ],
+  "tracks": {
+   "1": {
+    "first": 1,
+    "last": 13,
+    "p": 0,
+    "d": 11,
+    "dmax": 0.8711287379264832,
+    "state": "DEFECT",
+    "at": 1
+   },
+   "6": {
+    "first": 17,
+    "last": 23,
+    "p": 0,
+    "d": 5,
+    "dmax": 0.8278186917304993,
+    "state": "DEFECT",
+    "at": 17
+   },
+   "9": {
+    "first": 25,
+    "last": 25,
+    "p": 0,
+    "d": 1,
+    "dmax": 0.8204259276390076,
+    "state": "DEFECT",
+    "at": 25
+   },
+   "10": {
+    "first": 27,
+    "last": 93,
+    "p": 30,
+    "d": 16,
+    "dmax": 0.8366187214851379,
+    "state": "DEFECT",
+    "at": 27
+   },
+   "14": {
+    "first": 49,
+    "last": 57,
+    "p": 5,
+    "d": 0,
+    "dmax": 0.0,
+    "state": "PASS",
+    "at": 87
+   },
+   "29": {
+    "first": 63,
+    "last": 68,
+    "p": 5,
+    "d": 0,
+    "dmax": 0.0,
+    "state": "PASS",
+    "at": 98
+   },
+   "41": {
+    "first": 89,
+    "last": 91,
+    "p": 2,
+    "d": 0,
+    "dmax": 0.0,
+    "state": "INVALID",
+    "at": 121
+   },
+   "129": {
+    "first": 140,
+    "last": 140,
+    "p": 1,
+    "d": 0,
+    "dmax": 0.0,
+    "state": "INVALID",
+    "at": "end"
+   },
+   "130": {
+    "first": 140,
+    "last": 150,
+    "p": 2,
+    "d": 0,
+    "dmax": 0.0,
+    "state": "INVALID",
+    "at": "end"
+   }
+  }
+ },
+ "480_nocut": {
+  "cuts": [],
+  "tracks": {
+   "1": {
+    "first": 1,
+    "last": 91,
+    "p": 21,
+    "d": 29,
+    "dmax": 0.8835471868515015,
+    "state": "DEFECT",
+    "at": 1
+   },
+   "18": {
+    "first": 53,
+    "last": 57,
+    "p": 3,
+    "d": 0,
+    "dmax": 0.0,
+    "state": "PASS",
+    "at": 87
+   },
+   "24": {
+    "first": 63,
+    "last": 93,
+    "p": 19,
+    "d": 6,
+    "dmax": 0.8556531667709351,
+    "state": "DEFECT",
+    "at": 72
+   },
+   "126": {
+    "first": 140,
+    "last": 140,
+    "p": 1,
+    "d": 0,
+    "dmax": 0.0,
+    "state": "INVALID",
+    "at": "end"
+   },
+   "141": {
+    "first": 146,
+    "last": 146,
+    "p": 1,
+    "d": 0,
+    "dmax": 0.0,
+    "state": "INVALID",
+    "at": "end"
+   }
+  }
+ },
+ "480_cut": {
+  "cuts": [
+   14,
+   24,
+   26
+  ],
+  "tracks": {
+   "1": {
+    "first": 1,
+    "last": 13,
+    "p": 0,
+    "d": 9,
+    "dmax": 0.8835471868515015,
+    "state": "DEFECT",
+    "at": 1
+   },
+   "6": {
+    "first": 17,
+    "last": 23,
+    "p": 0,
+    "d": 6,
+    "dmax": 0.8674306869506836,
+    "state": "DEFECT",
+    "at": 17
+   },
+   "9": {
+    "first": 25,
+    "last": 25,
+    "p": 0,
+    "d": 1,
+    "dmax": 0.8475239276885986,
+    "state": "DEFECT",
+    "at": 25
+   },
+   "10": {
+    "first": 27,
+    "last": 91,
+    "p": 21,
+    "d": 10,
+    "dmax": 0.8690958023071289,
+    "state": "DEFECT",
+    "at": 27
+   },
+   "21": {
+    "first": 53,
+    "last": 57,
+    "p": 3,
+    "d": 0,
+    "dmax": 0.0,
+    "state": "PASS",
+    "at": 87
+   },
+   "27": {
+    "first": 63,
+    "last": 93,
+    "p": 19,
+    "d": 6,
+    "dmax": 0.8556531667709351,
+    "state": "DEFECT",
+    "at": 72
+   },
+   "129": {
+    "first": 140,
+    "last": 140,
+    "p": 1,
+    "d": 0,
+    "dmax": 0.0,
+    "state": "INVALID",
+    "at": "end"
+   },
+   "144": {
+    "first": 146,
+    "last": 146,
+    "p": 1,
+    "d": 0,
+    "dmax": 0.0,
+    "state": "INVALID",
+    "at": "end"
+   }
+  }
+ }
+}
