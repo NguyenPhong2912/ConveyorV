@@ -19,6 +19,8 @@ raw_videos/
 raw_datasets/
 reports/snapshots/
 reports/*.csv
+reports/sessions.json
+reports/settings.json
 data/images/
 data/labels/
 train/
