@@ -8,7 +8,7 @@ Video: `video_bang_truyen.mp4` do nhóm tự tạo bằng công cụ AI sinh vid
 | `qc_480.json`, `qc_640.json` | Checkpoint lần 1, chế độ QC Đạt / Lỗi, ảnh vào 480 px và 640 px, trên `video_bang_truyen.mp4`. |
 | `coco_480.json`, `coco_640.json` | Mô hình COCO `yolo26n.pt`, chế độ Chai & Dị vật khác (chế độ mặc định của web), 480 px và 640 px. |
 | `nhe_qc_480.json`, `nhe_coco_480.json` | Như trên, trên `videophanloai_nhe.mp4`. |
-| `labels_*.json` | Nhãn tay của từng track: mã vật trong đáp án mà hộp ôm (B1–B8, O1–O9), `WIDE` nếu hộp phủ gần cả khung, `NONE` nếu không ôm vật nào. |
+| `labels_*.json` | Nhãn tay của từng track: mã vật trong đáp án mà hộp ôm (B1–B8, O1–O10), `WIDE` nếu hộp phủ gần cả khung, `NONE` nếu không ôm vật nào. |
 | `snapshots/` | Khung hình do InspectionWorker vẽ để minh hoạ các kiểu lỗi (không in trong bản báo cáo rút gọn). |
 
 Checkpoint lần 1: SHA-256 `b9c06fd30e896c168f3d656dbed521020984046e06cb7f44060a8435e9f1e59f` (trùng với `checkpoint_lan1/pipeline_benchmark_20261120.json`).
@@ -24,4 +24,4 @@ python scripts/video_count_eval.py --eval-only doc/evaluation/ai_video/qc_480.js
     --gt doc/evaluation/ai_video/ground_truth.json --labels doc/evaluation/ai_video/labels_qc_480.json
 ```
 
-Lưu ý: đáp án và nhãn tay do người đếm bằng mắt (đáp án đã được đối chiếu với một lần đếm độc lập thứ hai), nhóm nên xem lại trước khi nộp. Ghép track với vật theo thời gian sai khi hai vật cùng có mặt, nên kết quả trong báo cáo luôn dùng nhãn tay. Chạy lại worker trên máy khác có thể cho số track khác một chút; khi đó phải gán lại nhãn tay.
+Đáp án được đếm bằng mắt và đối chiếu qua hai lần đếm độc lập. Ghép track với vật theo thời gian có thể sai khi hai vật cùng xuất hiện, nên kết quả trong báo cáo dùng nhãn tay. Nếu chạy lại worker và thu được số track khác, cần gán lại nhãn tay.

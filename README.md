@@ -7,11 +7,11 @@ Hệ thống phân loại sản phẩm đạt/lỗi trên băng chuyền, dùng 
 ```
 conveyorvision/
   data/
-    data.yaml                  # file cấu hình duy nhất: khai báo đường dẫn tuyệt đối + tên lớp
+    data.yaml                  # đường dẫn tương đối và tên lớp
     images/, labels/           # 2.650 ảnh thật đã chia train (1.866) / val (385) / test (399) — sinh bởi prepare_dataset.py
     split_manifest.csv         # ảnh nào thuộc tập nào, thuộc nhóm gần trùng nào
     split_report.json          # thống kê chia dữ liệu & rò rỉ
-    manifest.csv               # sinh ra bởi video_io.py — KHÔNG commit video gốc
+    manifest.csv               # danh sách frame do video_io.py ghi cục bộ
   doc/                         # đề xuất dự án và kết quả đánh giá (doc/evaluation)
   notebooks/
     ConveyorVision_YOLO_Training.ipynb  # notebook huấn luyện & trực quan hóa biểu đồ

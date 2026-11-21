@@ -8,6 +8,15 @@ __pycache__/
 *.pyc
 *.pyo
 .ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+/.coverage
+/.coverage.*
+/coverage.xml
+/htmlcov/
+/build/
+/dist/
+*.egg-info/
 
 # 2. File cấu hình nhạy cảm / Secrets
 .env
@@ -23,6 +32,8 @@ reports/sessions.json
 reports/settings.json
 data/images/
 data/labels/
+/data/manifest.csv
+/doc/evaluation/extra/
 train/
 valid/
 test/
@@ -43,10 +54,9 @@ runs/
 # 6. Cấu hình IDE cá nhân
 .vscode/
 .idea/
+~$*.docx
+Thumbs.db
+.DS_Store
 
 # 7. Giữ lại các thư mục rỗng qua .gitkeep
 !*/.gitkeep
-
-# Binary installers
-*.exe
-vc_redist*.exe

@@ -6,7 +6,7 @@ Cách chạy (từ thư mục gốc của dự án), hai bước:
 
     # Bước 1: chạy worker trên video, ghi các track và khung hình tốt nhất của mỗi track
     python scripts/video_count_eval.py --video raw_videos/video_bang_truyen.mp4 \
-        --model models/conveyor_qc_yolo26n.pt --mode bottle_inspection --imgsz 480 \
+        --model models/conveyor_yolo26_30ep_best.pt --mode bottle_inspection --imgsz 480 \
         --gt doc/evaluation/ai_video/ground_truth.json --out doc/evaluation/ai_video/qc_480.json
 
     # Bước 2: kiểm tra bằng mắt hộp của từng track rồi ghi nhãn vào tệp labels (track -> mã vật trong đáp án,

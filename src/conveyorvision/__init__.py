@@ -17,7 +17,6 @@ Example:
 
 __version__ = "2.0.0"
 __author__ = "ConveyorVision Team"
-__email__ = "contact@conveyorvision.com"
 
 from conveyorvision.dataset_manager import (
     audit_dataset,
@@ -48,5 +47,4 @@ __all__ = [
     # Package Info
     "__version__",
     "__author__",
-    "__email__",
 ]
