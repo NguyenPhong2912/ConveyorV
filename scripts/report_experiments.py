@@ -24,7 +24,7 @@ from ultralytics import YOLO
 
 MODEL = "models/conveyor_qc_yolo26n.pt"
 DATA = "data/data.yaml"
-VIDEO = "raw_videos/demo_conveyor_testset.mp4"
+VIDEO = "raw_videos/conveyor_demo.mp4"  # video demo dùng trong báo cáo (640 x 640, 10 khung/giây, 150 khung)
 CLASS_NAMES = {0: "pass", 1: "defect"}
 
 

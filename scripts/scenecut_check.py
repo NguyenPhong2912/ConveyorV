@@ -1,6 +1,7 @@
 """Thử SceneCutDetector của worker trên một video: so sánh phán quyết theo vết khi có và không có phát hiện chuyển cảnh.
 
-Sử dụng:  python scripts/scenecut_check.py --model models/conveyor_qc_yolo26n.pt --video raw_videos/demo_conveyor_testset.mp4
+Sử dụng:  python scripts/scenecut_check.py --model models/conveyor_yolo26_30ep_best.pt --video raw_videos/conveyor_demo.mp4
+(báo cáo dùng checkpoint lần 1 conveyor_yolo26_30ep_best.pt và video demo conveyor_demo.mp4; muốn đo cho lần 2 thì đổi --model sang models/conveyor_qc_yolo26n.pt)
 """
 import argparse, json, sys
 from pathlib import Path
@@ -11,7 +12,7 @@ from ultralytics import YOLO
 from conveyorvision.web.worker import SceneCutDetector, clear_tracker_state
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--video", default="raw_videos/demo_conveyor_testset.mp4")
+ap.add_argument("--video", default="raw_videos/conveyor_demo.mp4")
 ap.add_argument("--model", default="models/conveyor_qc_yolo26n.pt")
 ap.add_argument("--out", default="doc/evaluation/extra/scenecut_check.json")
 args = ap.parse_args()
