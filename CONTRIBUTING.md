@@ -1,4 +1,4 @@
-﻿# Contributing to ConveyorVision
+# Contributing to ConveyorVision
 
 Cảm ơn bạn quan tâm đóng góp cho ConveyorVision! Tài liệu này hướng dẫn cách đóng góp code, báo cáo lỗi, và cải thiện project.
 

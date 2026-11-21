@@ -6,9 +6,13 @@ on:
   pull_request:
     branches: [ main, master, develop ]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -22,6 +26,11 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
+
+    - name: Install system library for OpenCV
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgl1
 
     - name: Cache dependencies
       uses: actions/cache@v4
@@ -50,6 +59,7 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -60,9 +70,7 @@ jobs:
         python-version: '3.11'
 
     - name: Install linters
-      run: |
-        pip install flake8 black mypy
-        pip install -r requirements.txt
+      run: pip install flake8 black mypy
 
     - name: Run Black (code formatting)
       run: black --check --diff src/ tests/ || true
@@ -75,6 +83,7 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [test]
     steps:
     - name: Checkout repository
@@ -87,7 +96,7 @@ jobs:
 
     - name: Build package
       run: |
-        pip install build
+        python -m pip install --upgrade pip build
         python -m build
 
     - name: Check package
