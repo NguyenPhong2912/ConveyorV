@@ -10,7 +10,7 @@ const SCREENS = {
   history: ["Lịch sử phiên", "Kết quả, chi tiết từng sản phẩm và báo cáo CSV"],
   models: ["Mô hình & Dữ liệu", "Chỉ số đánh giá, checkpoint và tập dữ liệu"],
   settings: ["Cài đặt", "Giá trị mặc định cho các phiên kiểm định mới"],
-  docs: ["Tài liệu", "Hướng dẫn vận hành và tài liệu PDF"],
+  docs: ["Tài liệu", "Hướng dẫn vận hành và phím tắt"],
 };
 
 const STATE_LABELS = {

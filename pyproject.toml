@@ -51,12 +51,6 @@ dev = [
     "mypy>=1.0.0",
 ]
 
-[project.scripts]
-conveyor-train = "conveyorvision.train_pilot:main"
-conveyor-eval = "conveyorvision.evaluate:main"
-conveyor-inspect = "conveyorvision.inference_conveyor:main"
-conveyor-web = "run_app:main"
-
 [project.urls]
 Homepage = "https://github.com/anky06-ky/ConveyorVision"
 Documentation = "https://github.com/anky06-ky/ConveyorVision#readme"

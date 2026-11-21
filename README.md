@@ -12,7 +12,7 @@ conveyorvision/
     split_manifest.csv         # ảnh nào thuộc tập nào, thuộc nhóm gần trùng nào
     split_report.json          # thống kê chia dữ liệu & rò rỉ
     manifest.csv               # sinh ra bởi video_io.py — KHÔNG commit video gốc
-  doc/                         # tài liệu thiết kế, mindmap, báo cáo tiến độ
+  doc/                         # đề xuất dự án và kết quả đánh giá (doc/evaluation)
   notebooks/
     ConveyorVision_YOLO_Training.ipynb  # notebook huấn luyện & trực quan hóa biểu đồ
   src/conveyorvision/
@@ -114,7 +114,7 @@ Hệ thống cung cấp giao diện Web Dashboard (FastAPI + WebSocket, không p
 * **Lịch sử phiên:** tìm kiếm, xem chi tiết từng sản phẩm, tải CSV, xoá phiên.
 * **Mô hình & Dữ liệu:** chỉ số đánh giá (kèm cảnh báo rò rỉ dữ liệu cận trùng), biểu đồ, danh sách checkpoint (COCO / QC) và phân bổ tập dữ liệu.
 * **Cài đặt:** giá trị mặc định cho phiên mới (tracker, ngưỡng tin cậy, lost buffer, số frame quan sát, CSV, còi).
-* **Tài liệu:** quy trình vận hành, phím tắt và các tài liệu PDF.
+* **Tài liệu:** quy trình vận hành và phím tắt.
 
 Chế độ **Chai & Dị vật** cần trọng số COCO (ví dụ `models/yolo26n.pt`); chế độ **QC Đạt/Lỗi** cần checkpoint tự huấn luyện trong `models/`.
 Phím tắt ở màn hình Vận hành: `Space` tạm dừng/tiếp tục, `S` chụp hiện trường, `F` toàn màn hình.
@@ -136,7 +136,7 @@ python src/conveyorvision/inference_conveyor.py --source raw_videos/demo_bottles
 python src/conveyorvision/inference_conveyor.py --source 0 --model models/conveyor_qc_yolo26n.pt
 ```
 
-## 📊 Kết Quả Đánh Giá Thực Nghiệm (tập Test, chia theo nhóm)
+## Kết quả đánh giá thực nghiệm (tập Test, chia theo nhóm)
 
 YOLO26n huấn luyện từ trọng số COCO, dừng sớm ở epoch 67 (tốt nhất: epoch 47), mất 55 phút trên Quadro RTX 6000 dùng chung.
 Đánh giá trên **399 ảnh test, 802 box**, mô hình chưa từng thấy khi huấn luyện:
@@ -152,126 +152,53 @@ YOLO26n huấn luyện từ trọng số COCO, dừng sớm ở epoch 67 (tốt 
 * **Khác biệt miền (domain gap):** dữ liệu là ảnh chai đơn lẻ và băng chuyền rác thải. Trên video dây chuyền chiết rót dày đặc (stock Mixkit) mô hình gần như không phát hiện được, nên cần fine-tune bằng video từ camera thật của trạm.
 * Số liệu đầy đủ: [`doc/evaluation/metrics.json`](doc/evaluation/metrics.json) · giải thích: [`doc/evaluation/README.md`](doc/evaluation/README.md).
 
-## 🎬 Video demo
+## Video demo
 
 `python scripts/make_demo_videos.py` tạo 2 video từ ảnh thật **của tập test** vào `raw_videos/`:
 `demo_bottles_testset.mp4` (chai pass/defect) và `demo_conveyor_testset.mp4` (đoạn cuối video băng chuyền).
 Video stock dây chuyền thật (giấy phép Mixkit, miễn phí): [Beer bottle production line](https://mixkit.co/free-stock-video/beer-bottle-production-line-in-the-factory-33003/).
 
-## 📥 Trọng Số Mô Hình (.pt)
+## Trọng số mô hình (.pt)
 
 File `*.pt` không lưu trên Git (xem [`.gitignore`](.gitignore)). Khi clone mới:
 1. Tự huấn luyện lại theo Bước 2 → 4, rồi chép `best.pt` thành `models/conveyor_qc_yolo26n.pt`.
 2. Hoặc nhận file `conveyor_qc_yolo26n.pt` có sẵn và đặt vào `models/`.
 3. Chế độ *Chai & Dị vật* dùng `models/yolo26n.pt` (COCO). Tải bằng: `cd models && python -c "from ultralytics import YOLO; YOLO('yolo26n.pt')"`
 
-
-
-\\\
-
-## 🔧 Phát triển & Đóng góp
+## Phát triển
 
 ### Cài đặt môi trường phát triển
 
-\\\ash
-# Clone repository
+```bash
 git clone https://github.com/anky06-ky/ConveyorVision.git
 cd ConveyorVision
-
-# Tạo virtual environment
 python -m venv .venv
-.venv\Scripts\activate     # Windows
-source .venv/bin/activate  # Linux/Mac
-
-# Cài đặt dependencies
+source .venv/bin/activate    # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-
-# Cài đặt package ở chế độ development
 pip install -e ".[dev]"
-\\\
+```
 
-### Cấu hình Environment Variables
+### Chạy kiểm thử
 
-1. Copy \.env.example\ thành \.env\:
-   \\\ash
-   cp .env.example .env   # Linux/Mac
-   copy .env.example .env # Windows
-   \\\
-
-2. Cập nhật \ROBOFLOW_API_KEY\ nếu cần download dataset tự động
-
-### Chạy Tests
-
-\\\ash
-# Chạy tất cả tests
+```bash
 pytest tests/ -v
+pytest tests/ -v --cov=conveyorvision --cov-report=html   # báo cáo độ phủ ở htmlcov/index.html
+```
 
-# Chạy với coverage report
-pytest tests/ -v --cov=conveyorvision --cov-report=html
+### Chất lượng mã
 
-# Xem coverage report
-# Mở htmlcov/index.html trong trình duyệt
-\\\
-
-### Code Quality
-
-\\\ash
-# Format code với Black
+```bash
 black src/ tests/
-
-# Kiểm tra với Flake8
 flake8 src/ tests/ --max-line-length=100
-
-# Type checking với MyPy
 mypy src/conveyorvision --ignore-missing-imports
-\\\
+```
 
-### Đóng góp
-
-Xem hướng dẫn chi tiết tại [CONTRIBUTING.md](CONTRIBUTING.md)
-
-## 📦 Cài đặt như Python Package
-
-Project có thể được cài đặt như một Python package chuẩn:
-
-\\\ash
-# Từ PyPI (sau khi publish)
-pip install conveyorvision
-
-# Hoặc từ source
-git clone https://github.com/anky06-ky/ConveyorVision.git
-cd ConveyorVision
-pip install -e .
-\\\
-
-Sau khi cài đặt, có thể sử dụng các CLI commands:
-
-\\\ash
-# Huấn luyện mô hình
-conveyor-train --epochs 30 --batch 16
-
-# Đánh giá mô hình
-conveyor-eval --split test
-
-# Chạy kiểm định
-conveyor-inspect --source raw_videos/demo.mp4
-
-# Khởi chạy Web Dashboard
-conveyor-web --port 8000
-\\\
-
-## 📄 License
+## License
 
 Dự án được phân phối dưới MIT License. Xem [LICENSE](LICENSE) để biết thêm chi tiết.
 
-## 🙏 Credits
+## Credits
 
-- **YOLO26** by [Ultralytics](https://github.com/ultralytics/ultralytics)
-- **Dataset** từ [Roboflow](https://roboflow.com)
-- **ByteTrack** cho Object Tracking
-
----
-
-Made with ❤️ by **ConveyorVision Team**
-
-[![GitHub stars](https://img.shields.io/github/stars/anky06-ky/ConveyorVision.svg?style=social&label=Star)](https://github.com/anky06-ky/ConveyorVision)
+- **YOLO26** của [Ultralytics](https://github.com/ultralytics/ultralytics)
+- **Dữ liệu** từ [Roboflow](https://roboflow.com)
+- **ByteTrack** cho theo vết đối tượng
