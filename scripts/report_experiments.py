@@ -1,4 +1,4 @@
-"""Các phép đo bổ sung dùng trong báo cáo đồ án, chạy lại được từ dòng lệnh.
+"""Các phép đo bổ sung dùng trong báo cáo bài tập lớn, chạy lại được từ dòng lệnh.
 
 Mỗi lệnh con ghi một tệp kết quả vào doc/evaluation/extra (đổi bằng --out; đổi trọng số bằng --model):
 
